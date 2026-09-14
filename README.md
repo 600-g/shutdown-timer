@@ -38,7 +38,18 @@ git push && git push --tags
 600g.net 에는 그 링크(항상 최신을 가리키는 주소)만 걸어두면 됩니다.
 
 > 최신 릴리스 고정 다운로드 주소:
-> `https://github.com/<사용자명>/<저장소명>/releases/latest`
+> `https://github.com/600-g/shutdown-timer/releases/latest/download/AutoShutdownTimer.zip`
+
+### 600g.net 연동 (2026-09-15 완료)
+
+600g.net 허브의 **"종료타이머&알림" 카드는 이 저장소의 최신 Release 에 연결**돼 있다
+(두근컴퍼니 백엔드 `apps.json` — `source_repo: 600-g/shutdown-timer`, `source_asset: AutoShutdownTimer.zip`).
+
+- 카드의 버전·용량은 최신 Release 에서 자동으로 읽는다 (10분 캐시)
+- [받기] 버튼은 항상 `…/releases/latest/download/AutoShutdownTimer.zip` 으로 보낸다
+- 따라서 **새 버전은 `릴리스.bat` 한 번(태그 push)이면 사이트까지 자동 반영** — 허브 관리 화면에 따로 올리지 말 것 (이중 관리)
+- 에셋 이름 `AutoShutdownTimer.zip` 을 바꾸면 허브 연결이 끊긴다 (`build.sh` · `build.yml` 과 함께 유지)
+- `main` 만 push 하면 빌드가 돌지 않는다 — Release 는 `v*` 태그 push 에만 만들어진다
 
 ### 태그 없이 빌드만 확인하고 싶을 때
 
