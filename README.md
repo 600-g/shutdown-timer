@@ -4,38 +4,40 @@
 
 ---
 
-## 자동 배포 (패치마다 자동으로 Releases에 올리기)
+## 릴리스 = `main` 에 새 소스 올리기 (그게 전부)
 
-이 저장소는 **버전 태그를 push하면 GitHub이 알아서 빌드해서 Release에 zip을 올려줍니다.**
-매번 직접 파일을 올릴 필요가 없습니다.
+`src/PhoneShell.cs` 가 `main` 에 올라오면 GitHub Actions 가 알아서:
+1. 소스의 `VERSION = "v1.0 (build NN)"` 을 읽어 **`v1.0.NN` 태그가 아직 없으면** 빌드 시작
+2. 리눅스에서 mono 로 exe 빌드 → 보안패치.bat · 사용설명서.txt 와 zip 으로 묶기
+3. **Releases 에 `v1.0.NN` 자동 생성 + `AutoShutdownTimer.zip` 첨부**
+4. 600g.net 의 "종료타이머&알림" 카드가 최신 Release 를 자동으로 따라옴 (최대 10분)
 
-### 처음 한 번만 세팅
+번호가 이미 릴리스된 것과 같은데 소스만 바뀌었으면 **실패(빨간 X)** 로 표시해 알려줍니다 → 번호를 올려서 다시 올리면 됩니다.
 
-1. 이 폴더 전체를 GitHub 저장소에 올립니다 (아래 "최초 업로드" 참고).
-2. 저장소 → **Settings → Actions → General → Workflow permissions** 에서
-   **"Read and write permissions"** 를 켜고 저장. (Release 자동 생성에 필요)
+### 방법 A — GitHub 웹에서 업로드 (맥·git 필요 없음) ★ 기본
 
-### 패치할 때마다 (이게 전부)
+1. Claude 등에서 새 `PhoneShell.cs` 를 만들 때 **`VERSION` 의 build 번호를 하나 올리라고** 같이 지시
+2. https://github.com/600-g/shutdown-timer/tree/main/src 열기 → **Add file → Upload files**
+3. 새 `PhoneShell.cs` 를 끌어다 놓고 **Commit changes** (main 에 직접)
+4. 1~2분 뒤 **Releases** 탭에 새 버전, 이어서 600g.net 카드 갱신
 
-새 `PhoneShell.cs` 를 `src\` 에 덮어쓴 뒤 **`릴리스.bat` 더블클릭.**
-소스 안의 build 번호를 읽어 `v1.0.NN` 태그를 만들고 커밋·push·태그 push 까지 한 번에 합니다.
+### 방법 B — 윈도우에서 `릴리스.bat` 더블클릭
 
-(터미널로 직접 하려면)
+새 `PhoneShell.cs` 를 `src\` 에 덮어쓴 뒤 실행. 커밋·push 만 하고 태그·Release 는 Actions 가 만듭니다.
+번호가 이미 릴리스된 것이면 push 전에 멈추고 알려줍니다.
+
+### 방법 C — 터미널
+
 ```bash
-git add -A
-git commit -m "v1.0.55"
-git tag v1.0.55
-git push && git push --tags
+git add -A && git commit -m "v1.0.70" && git push
 ```
 
-`git push --tags` 를 하는 순간 GitHub Actions가:
-1. 리눅스에서 mono로 exe 빌드
-2. 보안패치.bat · 사용설명서.txt 와 함께 zip으로 묶기
-3. **Releases 페이지에 v1.0.12 로 자동 업로드**
+태그는 안 만들어도 됩니다 (Actions 가 만듦). 예전처럼 `git tag v1.0.70 && git push origin v1.0.70` 해도 똑같이 동작합니다.
 
-끝나면 저장소 **Releases** 탭에 새 버전이 생기고,
-`자동종료타이머.zip` 다운로드 링크가 자동으로 만들어집니다.
-600g.net 에는 그 링크(항상 최신을 가리키는 주소)만 걸어두면 됩니다.
+### 빌드만 확인하고 싶을 때
+
+저장소 **Actions** 탭 → `build-and-release` → **Run workflow**. zip 이 그 실행의 **Artifacts** 에 올라옵니다.
+"태그가 없으면 Release 까지 생성" 을 켜면 방법 A 와 같은 릴리스가 됩니다.
 
 > 최신 릴리스 고정 다운로드 주소:
 > `https://github.com/600-g/shutdown-timer/releases/latest/download/AutoShutdownTimer.zip`
@@ -47,14 +49,13 @@ git push && git push --tags
 
 - 카드의 버전·용량은 최신 Release 에서 자동으로 읽는다 (10분 캐시)
 - [받기] 버튼은 항상 `…/releases/latest/download/AutoShutdownTimer.zip` 으로 보낸다
-- 따라서 **새 버전은 `릴리스.bat` 한 번(태그 push)이면 사이트까지 자동 반영** — 허브 관리 화면에 따로 올리지 말 것 (이중 관리)
+- 허브 관리 화면에 따로 올리지 말 것 (이중 관리)
 - 에셋 이름 `AutoShutdownTimer.zip` 을 바꾸면 허브 연결이 끊긴다 (`build.sh` · `build.yml` 과 함께 유지)
-- `main` 만 push 하면 빌드가 돌지 않는다 — Release 는 `v*` 태그 push 에만 만들어진다
+- Actions 는 `src/` · `dist-extra/` · `build.sh` · 워크플로 파일이 바뀔 때만 돈다 (README 만 고치면 안 돎)
 
-### 태그 없이 빌드만 확인하고 싶을 때
+### 처음 한 번만 세팅 (2026-09-15 완료)
 
-저장소 **Actions** 탭 → 왼쪽 `build-and-release` → **Run workflow** 클릭.
-빌드된 zip이 그 실행의 **Artifacts** 에 올라옵니다 (Release는 안 만듦).
+저장소 → **Settings → Actions → General → Workflow permissions** 가 **Read and write** 여야 Release 를 만들 수 있다. 현재 설정돼 있음.
 
 ---
 
@@ -86,7 +87,7 @@ dist-extra/         배포 zip에 함께 넣는 파일
   보안패치.bat        최초 1회 실행용 (다운로드 차단 해제 + 백신 예외)
   사용설명서.txt
 build.sh            빌드 스크립트 (로컬/Actions 공통)
-릴리스.bat          윈도우에서 더블클릭 → 커밋·태그·push 한 번에
+릴리스.bat          윈도우에서 더블클릭 → 커밋·push (태그·Release 는 Actions 가)
 .github/workflows/build.yml   자동 빌드·배포 설정
 ```
 
