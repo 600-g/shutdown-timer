@@ -4123,8 +4123,10 @@ public static class Updater
             }
             if (state == 1)
             {
-                AppSheet s = new AppSheet("최신 버전입니다", myVer, null);
-                s.SetStatus("이대로 쓰시면 돼요", Theme.Ok);
+                // 맨 위는 번호만, 상태줄이 "최신 버전" 을 말한다.
+                // 제목까지 "최신 버전입니다" 로 두면 같은 말이 두 번 나온다.
+                AppSheet s = new AppSheet(myVer, null, null);
+                s.SetStatus("최신 버전", Theme.Ok);
                 s.Body.AddHead("이번 버전에 담긴 것");
                 AppSheet.AddMarkdown(s.Body, notes);
                 s.Tell(owner, "닫기");
