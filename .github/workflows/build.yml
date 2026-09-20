@@ -101,6 +101,52 @@ jobs:
           chmod +x build.sh
           ./build.sh
 
+      - name: 산출물 검증 (깨진 빌드가 사용자에게 나가지 않게 막는 마지막 관문)
+        run: |
+          python3 - <<'PYCHK'
+          import re, sys, zipfile
+          fails = []
+          def need(cond, msg):
+              if not cond: fails.append(msg)
+
+          z = zipfile.ZipFile("AutoShutdownTimer.zip")
+          names = z.namelist()
+          print("zip 내용물:", names)
+
+          # 1) 배포물에 세 파일이 다 있어야 한다 (하나라도 빠지면 사용자가 실행을 못 한다)
+          for want in ("AutoShutdownTimer.exe", "보안패치.bat", "사용설명서.txt"):
+              need(want in names, f"zip 에 {want} 가 없다")
+          if "AutoShutdownTimer.exe" not in names:
+              print("\n".join("❌ " + f for f in fails)); sys.exit(1)
+
+          exe = z.read("AutoShutdownTimer.exe")
+          need(exe[:2] == b"MZ", "exe 가 올바른 윈도우 실행파일이 아니다")
+          need(len(exe) > 500_000, f"exe 가 비정상적으로 작다 ({len(exe):,} bytes)")
+
+          # 2) 소스의 VERSION 과 exe 안에 박힌 버전이 같아야 한다
+          src = open("src/PhoneShell.cs", encoding="utf-8").read()
+          m = re.search(r'VERSION = "(v\d+\.\d+ \(build (\d+)\))"', src)
+          need(m is not None, "소스에서 VERSION 을 찾지 못했다")
+          if m:
+              need(m.group(1).encode("utf-16-le") in exe, f"exe 안에 {m.group(1)} 문자열이 없다")
+              print("버전:", m.group(1))
+
+          # 3) 자동 업데이트가 살아 있어야 한다 — 이게 빠지면 이후 사용자가 영영 갱신을 못 받는다
+          for probe, why in [
+              ("api.github.com/repos/600-g/shutdown-timer/releases/latest", "업데이트 확인 주소"),
+              ("releases/latest/download/AutoShutdownTimer.zip", "업데이트 내려받기 주소"),
+          ]:
+              need(probe.encode("utf-16-le") in exe, f"{why}가 exe 에 없다 (자동 업데이트 유실)")
+
+          # 4) 보안패치.bat 이 실제 exe 이름을 가리켜야 한다
+          bat = z.read("보안패치.bat").decode("cp949", "ignore")
+          need("AutoShutdownTimer.exe" in bat, "보안패치.bat 이 실제 exe 이름을 안 가리킨다")
+
+          if fails:
+              print("\n".join("❌ " + f for f in fails)); sys.exit(1)
+          print("✅ 검증 통과 — 배포해도 되는 산출물")
+          PYCHK
+
       - name: 산출물 아티팩트 업로드 (Release 안 만들어도 다운로드 가능)
         uses: actions/upload-artifact@v4
         with:
