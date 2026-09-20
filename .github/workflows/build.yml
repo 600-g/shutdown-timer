@@ -46,9 +46,9 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             TAG="$GITHUB_REF_NAME"
           else
-            VER=$(sed -nE 's/.*VERSION = "v([0-9]+\.[0-9]+) \(build ([0-9]+)\)".*/\1.\2/p' src/PhoneShell.cs | head -1)
+            VER=$(sed -nE 's/.*VERSION = "([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' src/PhoneShell.cs | head -1)
             if [[ -z "$VER" ]]; then
-              echo "::error::src/PhoneShell.cs 에서 VERSION = \"v1.0 (build NN)\" 을 찾지 못했습니다"
+              echo "::error::src/PhoneShell.cs 에서 VERSION = \"1.0.0\" 형식을 찾지 못했습니다"
               exit 1
             fi
             TAG="v$VER"
@@ -85,8 +85,8 @@ jobs:
             if git diff --quiet "$BEFORE" "$GITHUB_SHA" -- src/PhoneShell.cs; then
               echo "PhoneShell.cs 변경 없음 — 빌드만 하고 끝냅니다"
             else
-              echo "::error::src/PhoneShell.cs 가 바뀌었지만 $TAG 는 이미 릴리스돼 있습니다. VERSION = \"v1.0 (build NN)\" 의 NN 을 올려서 다시 올려주세요."
-              echo "- ❌ **번호를 올리지 않아 릴리스하지 않음** — \`VERSION = \"v1.0 (build NN)\"\` 의 NN 을 올려서 다시 올려주세요" >> "$GITHUB_STEP_SUMMARY"
+              echo "::error::src/PhoneShell.cs 가 바뀌었지만 $TAG 는 이미 릴리스돼 있습니다. VERSION 을 올리고(예: 1.0.1) CHANGELOG.md 에 항목을 추가한 뒤 다시 올려주세요."
+              echo "- ❌ **번호를 올리지 않아 릴리스하지 않음** — \`VERSION\` 을 올리고 CHANGELOG.md 에 항목을 추가하세요" >> "$GITHUB_STEP_SUMMARY"
               exit 1
             fi
           fi
@@ -125,11 +125,15 @@ jobs:
 
           # 2) 소스의 VERSION 과 exe 안에 박힌 버전이 같아야 한다
           src = open("src/PhoneShell.cs", encoding="utf-8").read()
-          m = re.search(r'VERSION = "(v\d+\.\d+ \(build (\d+)\))"', src)
+          m = re.search(r'VERSION = "(\d+\.\d+\.\d+)"', src)
           need(m is not None, "소스에서 VERSION 을 찾지 못했다")
           if m:
-              need(m.group(1).encode("utf-16-le") in exe, f"exe 안에 {m.group(1)} 문자열이 없다")
+              need(("v" + m.group(1)).encode("utf-16-le") in exe, f"exe 안에 v{m.group(1)} 문자열이 없다")
               print("버전:", m.group(1))
+              # CHANGELOG 에 이 버전 항목이 있어야 한다 — 없으면 사용자가 '뭐가 바뀌었나' 를 못 본다
+              ch = open("CHANGELOG.md", encoding="utf-8").read()
+              need(re.search(r"^##\s*" + re.escape(m.group(1)) + r"\s*$", ch, re.M) is not None,
+                   f"CHANGELOG.md 에 '## {m.group(1)}' 항목이 없다")
 
           # 3) 자동 업데이트가 살아 있어야 한다 — 이게 빠지면 이후 사용자가 영영 갱신을 못 받는다
           for probe, why in [
@@ -153,6 +157,20 @@ jobs:
           name: AutoShutdownTimer
           path: AutoShutdownTimer.zip
 
+      - name: 변경 내역 뽑기 (CHANGELOG.md 의 해당 버전 절)
+        if: steps.gate.outputs.release == 'true'
+        id: notes
+        run: |
+          VER="${{ steps.ver.outputs.tag }}"; VER="${VER#v}"
+          python3 - "$VER" > RELEASE_NOTES.md <<'PYN'
+          import re, sys
+          ver = sys.argv[1]
+          ch = open("CHANGELOG.md", encoding="utf-8").read()
+          m = re.search(r"^##\s*" + re.escape(ver) + r"\s*$(.*?)(?=^##\s|\Z)", ch, re.M | re.S)
+          print((m.group(1).strip() if m else "").strip() or "변경 내역이 없습니다.")
+          PYN
+          cat RELEASE_NOTES.md
+
       - name: Release 생성 및 zip 첨부
         if: steps.gate.outputs.release == 'true'
         uses: softprops/action-gh-release@v2
@@ -161,4 +179,4 @@ jobs:
           name: ${{ steps.ver.outputs.tag }}
           target_commitish: ${{ github.sha }}
           files: AutoShutdownTimer.zip
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
