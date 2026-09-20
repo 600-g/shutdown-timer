@@ -8,7 +8,8 @@ name: build-and-release
 #  3) Actions 탭 Run workflow → 빌드만 (release 체크 시 1) 과 동일)
 on:
   push:
-    branches: [main]
+    # dev 는 컴파일 검증 전용 — 판정 단계에서 릴리스 조건에 안 걸리므로 빌드만 하고 끝난다
+    branches: [main, dev]
     paths:
       - 'src/**'
       - 'dist-extra/**'
