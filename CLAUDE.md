@@ -32,21 +32,31 @@ src/PhoneShell.cs 수정 → main push → Actions(mono 빌드) → GitHub Relea
 - 올리는 방법 아무거나: GitHub 웹 Upload files(권장, git 불필요) · `릴리스.bat` 더블클릭 · `git push`
 - `README.md` 나 문서만 고치면 빌드가 돌지 않는다(의도된 동작).
 
-## 여러 기기에서 같이 쓸 때 (맥 + 윈도우 + claude.ai)
+## 관리는 윈도우에서만 (2026-09-20 확정)
 
-**진실은 GitHub 의 `main` 하나다.** 맥의 `~/Developer/shutdown-timer` 는 사본일 뿐이다.
-claude.ai 가 GitHub 에 바로 커밋하므로 맥 사본은 언제든 뒤처져 있을 수 있다.
+앱 수정·배포는 **윈도우에서 claude.ai 로만** 한다. 맥의 `~/Developer/shutdown-timer` 는
+읽기용 사본으로 남겨두고 **여기서 앱 코드를 고치지 않는다.** 두 곳에서 고치면 충돌이 나고,
+릴리스 태그가 커밋과 어긋나면 되돌리기 어렵다.
 
-- **맥에서 앱 코드를 고치기 전에 반드시 `git pull` 부터.** 안 하면 뒤처진 내용 위에 고치게 되고,
-  push 가 거부되거나 다른 기기의 수정을 덮어쓴다.
-- 윈도우 `릴리스.bat` 은 시작할 때 알아서 `git pull --rebase --autostash` 를 한다.
-- 같은 파일을 두 기기에서 동시에 고치지 않는 것이 가장 확실하다. 한 번에 한 곳에서만.
-- 충돌이 나면 억지로 밀지 말 것(`--force` 금지). 릴리스 태그가 커밋과 어긋나면 되돌리기 어렵다.
+- 맥에서 꼭 손대야 하면 **먼저 `git pull`**, 끝나면 바로 push 해서 사본을 남기지 않는다.
+- 충돌이 나도 `--force` 로 밀지 말 것.
+- 윈도우 `릴리스.bat` 은 시작할 때 `git pull --rebase --autostash` 를 먼저 한다(로컬 클론을 쓸 때만 필요).
 
 ```bash
-# 맥에서 작업 시작할 때
+# 맥에서 어쩔 수 없이 볼 때
 cd ~/Developer/shutdown-timer && git pull
 ```
+
+## ⚠️ 맥이 꺼지면 600g.net 다운로드가 멈춘다
+
+관리는 윈도우에서 하더라도 **배포 자체는 맥에 묶여 있다.** 600g.net 의 앱 카드는
+`api.600g.net`(맥의 company-hq 서버 + cloudflared)에서 목록을 받아오고, [받기] 도 그 서버를 거쳐
+GitHub 으로 302 된다. 맥이 꺼져 있으면 **카드가 아예 안 뜨고 다운로드도 안 된다.**
+
+GitHub 직행 주소는 맥과 무관하게 항상 살아 있다:
+`https://github.com/600-g/shutdown-timer/releases/latest/download/AutoShutdownTimer.zip`
+
+맥을 끄고도 배포를 유지하려면 허브가 이 주소로 바로 링크하게 바꿔야 한다(다운로드 집계는 잃는다).
 
 ## 건드리면 안 되는 것
 
