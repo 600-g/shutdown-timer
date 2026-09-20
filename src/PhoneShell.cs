@@ -1139,7 +1139,16 @@ public class MainForm : Form
         lblVerSet.Location = new Point(2, 328); lblVerSet.AutoSize = true; lblVerSet.BackColor = BG; panelSet.Controls.Add(lblVerSet);
         // 버전 줄을 누르면 수동으로 업데이트 확인 (새 버튼을 놓을 자리가 없어 라벨 자체를 버튼처럼 쓴다)
         lblVerSet.Cursor = Cursors.Hand;
-        lblVerSet.Click += delegate { Updater.Check(this, VERSION, false, ShowUpdateBadge); };
+        lblVerSet.Click += delegate
+        {
+            // 업데이트하면 앱이 닫히므로 진행 중인 전원 끄기 예약은 사라진다.
+            // 종료 확인 모달은 업데이트 경로에서 건너뛰므로, 여기서 미리 알려준다.
+            if (powerRunning && MessageBox.Show(
+                    "전원 끄기 예약이 진행 중입니다.\r\n업데이트하면 이 예약은 취소됩니다.\r\n\r\n계속할까요?",
+                    "확인", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+                return;
+            Updater.Check(this, VERSION, false, ShowUpdateBadge);
+        };
         tip.SetToolTip(lblVerSet, "클릭하면 새 버전이 있는지 확인합니다");
         tip.SetToolTip(chkGaming, "켜면 알림 소리를 내지 않고 팝업만 조용히 띄웁니다. 게임·영상의 전체화면 포커스도 빼앗지 않습니다.");
 
@@ -4039,15 +4048,16 @@ public static class Updater
     /// 종료가 취소되면 만든 배치를 지우고 false 를 돌려준다.
     static bool Install(Form owner)
     {
-        string bat = null;
+        string bat = null, cancel = null;
         ProcessStartInfo psi = null;
         try
         {
             string exePath = Application.ExecutablePath;
             string dir     = Path.GetDirectoryName(exePath);
             int    pid     = Process.GetCurrentProcess().Id;
-            bat = Path.Combine(Path.GetTempPath(),
-                      "ast_update_" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".bat");
+            string stamp = Guid.NewGuid().ToString("N").Substring(0, 8);
+            bat    = Path.Combine(Path.GetTempPath(), "ast_update_" + stamp + ".bat");
+            cancel = Path.Combine(Path.GetTempPath(), "ast_cancel_" + stamp + ".txt");
 
             // 배치 본문은 **순수 ASCII** 로만 만든다. 경로는 환경 변수로 넘긴다 —
             // 환경 블록은 유니코드로 전달되므로 코드페이지 문제가 아예 없다.
@@ -4058,16 +4068,20 @@ public static class Updater
             b.AppendLine("set \"PID=%AST_PID%\"");
             b.AppendLine("set \"EXE=%AST_EXE%\"");
             b.AppendLine("set \"DIR=%AST_DIR%\"");
+            b.AppendLine("set \"CANCEL=%AST_CANCEL%\"");
             b.AppendLine("set \"BAK=%AST_EXE%.bak\"");
             b.AppendLine("set \"TMPD=%TEMP%\\ast_up_%RANDOM%%RANDOM%\"");
             // 1) 앱이 완전히 끝날 때까지 최대 60초 대기.
             //    ★ 타임아웃이면 절대 교체하지 않는다 — 살아 있는 exe 를 덮어쓰면 앱을 잃는다.
+            //    ★ 앱이 종료를 취소하면 취소 파일을 만든다. 그러면 조용히 물러난다.
             b.AppendLine("for /L %%i in (1,1,60) do (");
+            b.AppendLine("  if exist \"%CANCEL%\" goto :quit");
             b.AppendLine("  tasklist /FI \"PID eq %PID%\" 2>nul | find \"%PID%\" >nul || goto :gone");
             b.AppendLine("  ping -n 2 127.0.0.1 >nul");
             b.AppendLine(")");
             b.AppendLine("goto :fail");
             b.AppendLine(":gone");
+            b.AppendLine("if exist \"%CANCEL%\" goto :quit");
             b.AppendLine("md \"%TMPD%\" 2>nul");
             // 2) 내려받기 + 압축 풀기 (TLS 1.2 명시 — 옛 파워셸 기본값으로는 GitHub 연결 실패)
             b.AppendLine("powershell -NoProfile -ExecutionPolicy Bypass -Command " +
@@ -4087,58 +4101,73 @@ public static class Updater
             b.AppendLine("for %%f in (\"%TMPD%\\*\") do (");
             b.AppendLine("  if /I not \"%%~nxf\"==\"u.zip\" if /I not \"%%~nxf\"==\"AutoShutdownTimer.exe\" copy /Y \"%%f\" \"%DIR%\\\" >nul");
             b.AppendLine(")");
-            b.AppendLine("del \"%BAK%\" 2>nul");
+            // 4) 새 앱이 **실제로 뜨는지 확인한 뒤에만** 백업을 지운다.
+            //    크기까지 맞는데 백신이 막아 실행이 안 되는 경우가 있다.
             b.AppendLine("start \"\" \"%EXE%\"");
-            b.AppendLine("goto :done");
-            // 4) 교체가 깨졌으면 백업으로 되돌린다 — 사용자가 앱을 잃으면 안 된다.
+            b.AppendLine("ping -n 6 127.0.0.1 >nul");
+            b.AppendLine("tasklist /FI \"IMAGENAME eq AutoShutdownTimer.exe\" 2>nul | find /I \"AutoShutdownTimer.exe\" >nul && goto :ok");
             b.AppendLine(":rollback");
             b.AppendLine("copy /Y \"%BAK%\" \"%EXE%\" >nul");
+            b.AppendLine("if errorlevel 1 goto :lost");
+            b.AppendLine("if not exist \"%EXE%\" goto :lost");
+            b.AppendLine("for %%z in (\"%EXE%\") do if %%~zz LSS 500000 goto :lost");
             b.AppendLine("del \"%BAK%\" 2>nul");
-            // 5) 실패해도 원래 앱은 되살리고, 사이트를 열어 직접 받게 안내한다.
+            b.AppendLine("goto :fail");
+            b.AppendLine(":ok");
+            b.AppendLine("del \"%BAK%\" 2>nul");
+            b.AppendLine("goto :done");
+            // 5) 실패했지만 원본은 멀쩡한 경우 — 원래 앱을 되살리고 사이트로 안내한다.
             b.AppendLine(":fail");
             b.AppendLine("start \"\" \"%EXE%\"");
             b.AppendLine("start \"\" \"" + SiteUrl + "\"");
+            b.AppendLine("goto :done");
+            // 6) 복원까지 실패 — ★ 백업을 절대 지우지 않고, 깨진 exe 도 실행하지 않는다.
+            //    폴더를 열어 사용자가 .bak 을 직접 되돌릴 수 있게 하고 사이트로 안내한다.
+            b.AppendLine(":lost");
+            b.AppendLine("start \"\" \"%DIR%\"");
+            b.AppendLine("start \"\" \"" + SiteUrl + "\"");
+            b.AppendLine("goto :done");
+            b.AppendLine(":quit");
             b.AppendLine(":done");
+            b.AppendLine("del \"%CANCEL%\" 2>nul");
             b.AppendLine("rd /S /Q \"%TMPD%\" 2>nul");
             b.AppendLine("(goto) 2>nul & del \"%~f0\"");
 
             File.WriteAllText(bat, b.ToString(), Encoding.ASCII);
 
-            psi = new ProcessStartInfo(bat);
-            psi.WindowStyle = ProcessWindowStyle.Hidden;
+            // ★ .bat 은 CreateProcess 로 직접 실행할 수 없다(오류 193 — 유효한 Win32 응용 프로그램이 아님).
+            //   반드시 cmd 로 감싸야 한다. 환경 변수를 넘기려면 UseShellExecute 는 false 여야 하므로
+            //   ShellExecute 로 바꾸는 것은 해법이 아니다.
+            psi = new ProcessStartInfo(
+                      Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe",
+                      "/d /c \"\"" + bat + "\"\"");
             psi.CreateNoWindow = true;
             psi.UseShellExecute = false;
             psi.WorkingDirectory = Path.GetTempPath();
             psi.EnvironmentVariables["AST_EXE"] = exePath;
             psi.EnvironmentVariables["AST_DIR"] = dir;
             psi.EnvironmentVariables["AST_PID"] = pid.ToString();
+            psi.EnvironmentVariables["AST_CANCEL"] = cancel;
         }
         catch { return false; }
 
-        // ★ 배치는 앱이 **실제로 닫힌 뒤에만** 띄운다.
-        //   먼저 띄워두고 Application.Exit() 을 부르면, 종료가 취소됐을 때
-        //   배치만 홀로 돌다가 살아 있는 exe 를 덮어쓰려다 실패한다.
-        bool started = false;
-        FormClosedEventHandler onClosed = delegate
-        {
-            try { Process.Start(psi); started = true; } catch { }
-        };
-        try
-        {
-            Updating = true;
-            if (owner != null) owner.FormClosed += onClosed;
-            Application.Exit();
-        }
-        catch { }
-        finally
-        {
-            try { if (owner != null) owner.FormClosed -= onClosed; } catch { }
-            Updating = false;
-        }
-
-        if (!started)
+        // ★ 배치를 **먼저** 띄운다. 못 띄우면 앱이 살아 있는 동안 사용자에게 알릴 수 있다.
+        //   배치는 앱이 죽기를 기다리고, 60초 안에 안 죽으면 교체를 포기하므로 먼저 띄워도 안전하다.
+        try { Process.Start(psi); }
+        catch
         {
             try { File.Delete(bat); } catch { }
+            return false;
+        }
+
+        try { Updating = true; Application.Exit(); }
+        catch { }
+        finally { Updating = false; }
+
+        // 종료가 취소됐다면 배치에 취소를 알린다 (배치는 이 파일을 보고 조용히 물러난다).
+        if (owner != null && !owner.IsDisposed)
+        {
+            try { File.WriteAllText(cancel, "1"); } catch { }
             return false;
         }
         return true;
