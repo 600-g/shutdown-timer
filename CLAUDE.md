@@ -35,7 +35,11 @@ src/PhoneShell.cs 수정 → main push → Actions(mono 빌드) → GitHub Relea
 - C# WinForms 단일 파일(`src/PhoneShell.cs`, 3,700줄). 리눅스 mono(`mcs`)로 크로스 빌드한다. 윈도우 전용 API를 쓰면 빌드가 깨진다.
 - 폰트(Pretendard 서브셋)·아이콘은 `-resource:` 로 exe 안에 박혀 있다. `build.sh` 의 리소스 이름을 바꾸면 런타임에 못 찾는다.
 - 관리자 권한 매니페스트가 `src/app_full.res` 에 들어 있다(게임 강제 종료용).
-- **현재 네트워크 기능이 전혀 없다**(`System.Net` 미사용). 앱 내 자동 업데이트는 아직 없다.
+- **자동 업데이트가 들어 있다**(build 72~, 파일 끝 `Updater` 클래스). 시작 6초 뒤 조용히 확인하고, 설정의 버전 줄을 누르면 수동 확인한다.
+  - 릴리스 태그의 끝 숫자와 `VERSION` 의 build 번호를 비교한다. 그래서 **태그와 소스 번호가 어긋나면 업데이트가 안 뜬다.**
+  - 교체는 임시 배치가 한다(실행 중 exe 는 자기를 못 덮어씀). 배치는 **`Encoding.Default`(시스템 ANSI)로 써야 한다** — ASCII 로 쓰면 한글 사용자명 경로에서 실패한다.
+  - `.NET 4.5` 기본 TLS 는 1.0 이라 GitHub 에 연결되지 않는다. `ServicePointManager.SecurityProtocol = 3072` 을 지우지 말 것.
+  - 어떤 실패도 앱을 멈추면 안 된다. 전부 try/catch 이고 조용한 확인은 실패를 알리지 않는다.
 
 ## 확인
 

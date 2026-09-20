@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Net;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using System.IO;
@@ -1134,6 +1135,10 @@ public class MainForm : Form
         Label lblVerSet = new Label(); lblVerSet.Text = "자동 종료 타이머 " + VERSION;
         lblVerSet.Font = Fonts.Regular(8.5F); lblVerSet.ForeColor = MUTED;
         lblVerSet.Location = new Point(2, 328); lblVerSet.AutoSize = true; lblVerSet.BackColor = BG; panelSet.Controls.Add(lblVerSet);
+        // 버전 줄을 누르면 수동으로 업데이트 확인 (새 버튼을 놓을 자리가 없어 라벨 자체를 버튼처럼 쓴다)
+        lblVerSet.Cursor = Cursors.Hand;
+        lblVerSet.Click += delegate { Updater.Check(this, VERSION, false); };
+        tip.SetToolTip(lblVerSet, "클릭하면 새 버전이 있는지 확인합니다");
         tip.SetToolTip(chkGaming, "켜면 알림 소리를 내지 않고 팝업만 조용히 띄웁니다. 게임·영상의 전체화면 포커스도 빼앗지 않습니다.");
 
         // ── 타이머 입력 줄 (전원/프로그램 모드) ──
@@ -1221,6 +1226,14 @@ public class MainForm : Form
         {
             SetPlaceholder(txtMsg, "알림 내용 (비우면 \"시간이 되었습니다\")");
             SetPlaceholder(txtProg, "프로그램 이름 · 예: chrome.exe");
+            // 시작 직후는 백신 행위감시가 예민하므로 6초 뒤에 조용히 새 버전만 확인한다.
+            try
+            {
+                Timer upChk = new Timer(); upChk.Interval = 6000;
+                upChk.Tick += delegate { upChk.Stop(); try { Updater.Check(this, VERSION, true); } catch { } };
+                upChk.Start();
+            }
+            catch { }
         };
         if (loadedFrom != null)
         {
@@ -1887,7 +1900,7 @@ public class MainForm : Form
             return System.IO.Path.Combine(d, "settings.txt");
         }
     }
-    private const string VERSION = "v1.0 (build 71)";   // 진단 표기용 내부 버전
+    private const string VERSION = "v1.0 (build 72)";   // 진단 표기용 내부 버전
     private int sigClicks = 0; private DateTime sigFirst = DateTime.MinValue;
     private string loadedFrom = null;   // 진단: 설정을 어디서 불러왔는지
     private bool saveErrShown = false;
@@ -3759,5 +3772,192 @@ public class MainForm : Form
         {
             try { if (mtx != null) mtx.ReleaseMutex(); } catch { }
         }
+    }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  자동 업데이트
+//
+//  GitHub 릴리스에서 최신 build 번호를 읽어 지금 버전과 비교하고, 사용자가 동의하면
+//  임시 배치를 띄운 뒤 앱을 종료한다. 실행 중인 exe 는 자기 자신을 덮어쓸 수 없어서
+//  실제 교체는 그 배치가 대신한다 (앱 종료 대기 → 내려받기 → 압축 해제 → 교체 → 재실행).
+//
+//  원칙: 어떤 단계가 실패해도 앱 동작에는 영향이 없어야 한다. 전부 try/catch 로 감싸고,
+//  조용한 확인(silent)에서는 실패를 사용자에게 알리지 않는다.
+// ─────────────────────────────────────────────────────────────────────────────
+public static class Updater
+{
+    const string ApiUrl  = "https://api.github.com/repos/600-g/shutdown-timer/releases/latest";
+    const string ZipUrl  = "https://github.com/600-g/shutdown-timer/releases/latest/download/AutoShutdownTimer.zip";
+    const string SiteUrl = "https://600g.net";
+    const string Title   = "자동 종료 타이머";
+
+    static bool busy = false;
+
+    /// "v1.0 (build 71)" · "v1.0.71" 양쪽에서 끝 숫자를 뽑는다. 실패하면 -1.
+    public static int ParseBuild(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return -1;
+        System.Text.RegularExpressions.Match m =
+            System.Text.RegularExpressions.Regex.Match(s, @"(\d+)\D*$");
+        if (!m.Success) return -1;
+        try { return int.Parse(m.Groups[1].Value); } catch { return -1; }
+    }
+
+    /// 최신 릴리스 태그(v1.0.NN). 실패하면 null — 네트워크 없음·차단·차단된 방화벽 전부 여기로.
+    static string FetchLatestTag()
+    {
+        // .NET 4.5 기본값은 TLS 1.0 이라 GitHub 에 연결되지 않는다. 1.2 를 명시해야 한다.
+        try { ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072; } catch { }
+        try
+        {
+            HttpWebRequest req = (HttpWebRequest)WebRequest.Create(ApiUrl);
+            req.UserAgent = "AutoShutdownTimer";          // GitHub 은 User-Agent 없으면 403
+            req.Accept = "application/vnd.github+json";
+            req.Timeout = 8000;
+            req.ReadWriteTimeout = 8000;
+            using (WebResponse res = req.GetResponse())
+            using (Stream st = res.GetResponseStream())
+            using (StreamReader sr = new StreamReader(st, Encoding.UTF8))
+            {
+                string body = sr.ReadToEnd();
+                System.Text.RegularExpressions.Match m =
+                    System.Text.RegularExpressions.Regex.Match(body, "\"tag_name\"\\s*:\\s*\"([^\"]+)\"");
+                return m.Success ? m.Groups[1].Value : null;
+            }
+        }
+        catch { return null; }
+    }
+
+    /// 새 버전 확인. 네트워크는 백그라운드에서 하고 결과만 UI 스레드로 돌려준다.
+    /// silent = true 면 최신이거나 확인에 실패해도 아무것도 띄우지 않는다(시작 시 자동 확인).
+    public static void Check(Form owner, string currentVersion, bool silent)
+    {
+        if (busy) return;
+        busy = true;
+        int cur = ParseBuild(currentVersion);
+        try
+        {
+            System.Threading.ThreadPool.QueueUserWorkItem(delegate
+            {
+                string tag = null;
+                try { tag = FetchLatestTag(); } catch { }
+                int latest = ParseBuild(tag);
+                try
+                {
+                    if (owner != null && !owner.IsDisposed && owner.IsHandleCreated)
+                    {
+                        owner.BeginInvoke((MethodInvoker)delegate
+                        {
+                            try { Decide(owner, tag, cur, latest, silent); }
+                            catch { }
+                            finally { busy = false; }
+                        });
+                        return;
+                    }
+                }
+                catch { }
+                busy = false;
+            });
+        }
+        catch { busy = false; }
+    }
+
+    static void Decide(Form owner, string tag, int cur, int latest, bool silent)
+    {
+        if (cur < 0 || latest < 0)
+        {
+            if (!silent)
+                MessageBox.Show(owner,
+                    "업데이트 서버에 연결하지 못했습니다.\r\n인터넷 연결을 확인한 뒤 다시 눌러주세요.",
+                    Title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        if (latest <= cur)
+        {
+            if (!silent)
+                MessageBox.Show(owner,
+                    "최신 버전을 쓰고 있습니다.  (build " + cur + ")",
+                    Title, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        DialogResult r = MessageBox.Show(owner,
+            "새 버전이 나왔습니다.\r\n\r\n" +
+            "    지금 버전 :  build " + cur + "\r\n" +
+            "    새 버전    :  " + tag + "\r\n\r\n" +
+            "지금 업데이트할까요?\r\n" +
+            "앱이 잠깐 닫혔다가 새 버전으로 다시 열립니다.\r\n" +
+            "예약해 둔 타이머가 있으면 먼저 끝내고 하세요.",
+            Title, MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        if (r != DialogResult.Yes) return;
+
+        if (!Install(owner))
+            MessageBox.Show(owner,
+                "업데이트를 시작하지 못했습니다.\r\n600g.net 에서 직접 받아주세요.",
+                Title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+    }
+
+    /// 교체 배치를 만들어 띄우고 앱을 끝낸다. 성공적으로 띄웠으면 true.
+    static bool Install(Form owner)
+    {
+        try
+        {
+            string exePath = Application.ExecutablePath;
+            string dir     = Path.GetDirectoryName(exePath);
+            int    pid     = Process.GetCurrentProcess().Id;
+            string bat     = Path.Combine(Path.GetTempPath(),
+                                 "ast_update_" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".bat");
+
+            StringBuilder b = new StringBuilder();
+            b.AppendLine("@echo off");
+            b.AppendLine("setlocal enableextensions");
+            b.AppendLine("set \"PID=" + pid + "\"");
+            b.AppendLine("set \"EXE=" + exePath + "\"");
+            b.AppendLine("set \"DIR=" + dir + "\"");
+            b.AppendLine("set \"TMPD=%TEMP%\\ast_up_%RANDOM%%RANDOM%\"");
+            // 1) 앱이 완전히 끝날 때까지 최대 30초 대기 (파일 잠금 해제 대기)
+            b.AppendLine("for /L %%i in (1,1,30) do (");
+            b.AppendLine("  tasklist /FI \"PID eq %PID%\" 2>nul | find \"%PID%\" >nul || goto :gone");
+            b.AppendLine("  ping -n 2 127.0.0.1 >nul");
+            b.AppendLine(")");
+            b.AppendLine(":gone");
+            b.AppendLine("md \"%TMPD%\" 2>nul");
+            // 2) 내려받기 + 압축 풀기 (TLS 1.2 명시 — 옛 파워셸 기본값으로는 GitHub 연결 실패)
+            b.AppendLine("powershell -NoProfile -ExecutionPolicy Bypass -Command " +
+                         "\"[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; " +
+                         "Invoke-WebRequest -Uri '" + ZipUrl + "' -OutFile (Join-Path $env:TMPD 'u.zip') -UseBasicParsing; " +
+                         "Expand-Archive -LiteralPath (Join-Path $env:TMPD 'u.zip') -DestinationPath $env:TMPD -Force\" || goto :fail");
+            b.AppendLine("if not exist \"%TMPD%\\AutoShutdownTimer.exe\" goto :fail");
+            // 3) 받은 파일 전부를 앱 폴더로 덮어쓴다 (한글 파일명을 배치에 적지 않으려고 통째로 순회)
+            b.AppendLine("for %%f in (\"%TMPD%\\*\") do (");
+            b.AppendLine("  if /I not \"%%~nxf\"==\"u.zip\" copy /Y \"%%f\" \"%DIR%\\\" >nul");
+            b.AppendLine(")");
+            b.AppendLine("start \"\" \"%EXE%\"");
+            b.AppendLine("goto :done");
+            // 4) 실패해도 원래 앱은 되살린다. 그리고 사이트를 열어 직접 받게 안내.
+            b.AppendLine(":fail");
+            b.AppendLine("start \"\" \"%EXE%\"");
+            b.AppendLine("start \"\" \"" + SiteUrl + "\"");
+            b.AppendLine(":done");
+            b.AppendLine("rd /S /Q \"%TMPD%\" 2>nul");
+            b.AppendLine("(goto) 2>nul & del \"%~f0\"");
+
+            // 경로에 한글이 섞일 수 있다(C:\Users\사용자\...). 배치는 시스템 ANSI 코드페이지로 써야
+            // cmd 가 같은 글자로 읽는다. ASCII 로 쓰면 한글 경로에서 파일을 못 찾는다.
+            File.WriteAllText(bat, b.ToString(), Encoding.Default);
+
+            ProcessStartInfo psi = new ProcessStartInfo(bat);
+            psi.WindowStyle = ProcessWindowStyle.Hidden;
+            psi.CreateNoWindow = true;
+            psi.UseShellExecute = false;
+            psi.WorkingDirectory = Path.GetTempPath();
+            Process.Start(psi);
+        }
+        catch { return false; }
+
+        try { Application.Exit(); } catch { }
+        return true;
     }
 }
