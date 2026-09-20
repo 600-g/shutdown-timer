@@ -1928,7 +1928,7 @@ public class MainForm : Form
             return System.IO.Path.Combine(d, "settings.txt");
         }
     }
-    private const string VERSION = "1.0.2";   // 배포 버전 (semver) — 태그 v1.0.1 과 같은 값
+    private const string VERSION = "1.0.3";   // 배포 버전 (semver) — 태그 v1.0.1 과 같은 값
     private int sigClicks = 0; private DateTime sigFirst = DateTime.MinValue;
     private string loadedFrom = null;   // 진단: 설정을 어디서 불러왔는지
     private bool saveErrShown = false;
@@ -4217,8 +4217,13 @@ public static class Updater
             b.AppendLine("powershell -NoProfile -ExecutionPolicy Bypass -Command " +
                          "\"[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; " +
                          "Invoke-WebRequest -Uri '" + ZipUrl + "' -OutFile (Join-Path $env:TMPD 'u.zip') -UseBasicParsing; " +
-                         "Expand-Archive -LiteralPath (Join-Path $env:TMPD 'u.zip') -DestinationPath $env:TMPD -Force\" || goto :fail");
+                         "Expand-Archive -LiteralPath (Join-Path $env:TMPD 'u.zip') -DestinationPath $env:TMPD -Force; " +
+                         "Get-ChildItem -LiteralPath $env:TMPD -Recurse -File | Unblock-File\" || goto :fail");
             b.AppendLine("if not exist \"%TMPD%\\AutoShutdownTimer.exe\" goto :fail");
+            // ★ 인터넷에서 받은 파일에는 차단 표시가 붙는다. 압축을 풀면 그 표시가 exe 로 옮겨가고
+            //   윈도우가 실행을 막는다(보안패치.bat 이 하는 일과 같다). 위 Unblock-File 이 1차,
+            //   아래 삭제가 2차 방어다. 이걸 빼면 업데이트 후 앱이 다시 켜지지 않는다.
+            b.AppendLine("del \"%TMPD%\\AutoShutdownTimer.exe:Zone.Identifier\" 2>nul");
             // 3) ★ 백업 → 교체 → 검증. 한 단계라도 어긋나면 원래 exe 를 되돌린다.
             //    제자리 덮어쓰기만 하면 복사가 중간에 끊겼을 때 되돌릴 방법이 없다.
             b.AppendLine("copy /Y \"%EXE%\" \"%BAK%\" >nul");
@@ -4231,29 +4236,30 @@ public static class Updater
             b.AppendLine("for %%f in (\"%TMPD%\\*\") do (");
             b.AppendLine("  if /I not \"%%~nxf\"==\"u.zip\" if /I not \"%%~nxf\"==\"AutoShutdownTimer.exe\" copy /Y \"%%f\" \"%DIR%\\\" >nul");
             b.AppendLine(")");
-            // 4) 새 앱이 **실제로 뜨는지 확인한 뒤에만** 백업을 지운다.
-            //    크기까지 맞는데 백신이 막아 실행이 안 되는 경우가 있다.
+            // 4) 새 앱을 띄운다.
+            //    ★ "떴는지 확인하고 안 떴으면 되돌리기" 는 넣었다가 뺐다(1.0.2 에서 실제로 사고).
+            //      백신이 새 exe 를 검사하느라 5초 안에 안 뜨는 일이 흔한데, 그때 되돌리려고
+            //      막 시작한 exe 를 덮어쓰려다 실패해서 앱이 아예 안 켜졌다.
+            //      파일 무결성(크기·존재)은 이미 확인했으니 여기서는 그냥 띄운다.
             b.AppendLine("start \"\" \"%EXE%\"");
-            b.AppendLine("ping -n 6 127.0.0.1 >nul");
-            b.AppendLine("tasklist /FI \"IMAGENAME eq AutoShutdownTimer.exe\" 2>nul | find /I \"AutoShutdownTimer.exe\" >nul && goto :ok");
+            b.AppendLine("del \"%BAK%\" 2>nul");
+            b.AppendLine("goto :done");
+            // 5) 교체가 깨졌으면 백업으로 되돌린다.
             b.AppendLine(":rollback");
             b.AppendLine("copy /Y \"%BAK%\" \"%EXE%\" >nul");
             b.AppendLine("if errorlevel 1 goto :lost");
-            b.AppendLine("if not exist \"%EXE%\" goto :lost");
-            b.AppendLine("for %%z in (\"%EXE%\") do if %%~zz LSS 500000 goto :lost");
             b.AppendLine("del \"%BAK%\" 2>nul");
-            b.AppendLine("goto :fail");
-            b.AppendLine(":ok");
-            b.AppendLine("del \"%BAK%\" 2>nul");
-            b.AppendLine("goto :done");
-            // 5) 실패했지만 원본은 멀쩡한 경우 — 원래 앱을 되살리고 사이트로 안내한다.
+            // 6) 실패했지만 앱 파일은 멀쩡하다 — 되살리고 사이트로 안내한다.
             b.AppendLine(":fail");
             b.AppendLine("start \"\" \"%EXE%\"");
             b.AppendLine("start \"\" \"" + SiteUrl + "\"");
             b.AppendLine("goto :done");
-            // 6) 복원까지 실패 — ★ 백업을 절대 지우지 않고, 깨진 exe 도 실행하지 않는다.
-            //    폴더를 열어 사용자가 .bak 을 직접 되돌릴 수 있게 하고 사이트로 안내한다.
+            // 7) 복원까지 실패 — 백업을 남기고, 그래도 앱은 띄워본다.
+            //    폴더도 열어 사용자가 .bak 을 직접 되돌릴 수 있게 한다.
             b.AppendLine(":lost");
+            // 배치는 순수 ASCII 여야 하므로 안내문도 영문으로 쓴다(한글은 깨진다).
+            b.AppendLine("echo Update failed. Rename AutoShutdownTimer.exe.bak to AutoShutdownTimer.exe to restore. > \"%DIR%\\UPDATE-FAILED.txt\"");
+            b.AppendLine("start \"\" \"%EXE%\"");
             b.AppendLine("start \"\" \"%DIR%\"");
             b.AppendLine("start \"\" \"" + SiteUrl + "\"");
             b.AppendLine("goto :done");
