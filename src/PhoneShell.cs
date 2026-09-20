@@ -755,7 +755,8 @@ public class MainForm : Form
     private IosStepper numMinutes;
     private AppButton btnStart, btnCancel, btnTest;
 
-    private Label lblCountdown, lblStatus, lblEta; private Timer etaTimer; private bool presetCentered = false;
+    private Label lblCountdown, lblStatus, lblEta;
+    private Label lblVerSet;            // 설정 맨 아래 버전 줄 — 새 버전이 있으면 여기에 배지를 단다 private Timer etaTimer; private bool presetCentered = false;
 
     private Panel panelFail;                     // 실패 시에만 노출
     private Label lblFail;
@@ -1132,12 +1133,12 @@ public class MainForm : Form
         // 3) 정보
         Label sg4 = new Label(); sg4.Text = "정보"; sg4.Font = Fonts.Semi(9.5F); sg4.ForeColor = MUTED;
         sg4.Location = new Point(2, 310); sg4.AutoSize = true; sg4.BackColor = BG; panelSet.Controls.Add(sg4);
-        Label lblVerSet = new Label(); lblVerSet.Text = "자동 종료 타이머 " + VERSION;
+        lblVerSet = new Label(); lblVerSet.Text = "자동 종료 타이머 " + VERSION;
         lblVerSet.Font = Fonts.Regular(8.5F); lblVerSet.ForeColor = MUTED;
         lblVerSet.Location = new Point(2, 328); lblVerSet.AutoSize = true; lblVerSet.BackColor = BG; panelSet.Controls.Add(lblVerSet);
         // 버전 줄을 누르면 수동으로 업데이트 확인 (새 버튼을 놓을 자리가 없어 라벨 자체를 버튼처럼 쓴다)
         lblVerSet.Cursor = Cursors.Hand;
-        lblVerSet.Click += delegate { Updater.Check(this, VERSION, false); };
+        lblVerSet.Click += delegate { Updater.Check(this, VERSION, false, ShowUpdateBadge); };
         tip.SetToolTip(lblVerSet, "클릭하면 새 버전이 있는지 확인합니다");
         tip.SetToolTip(chkGaming, "켜면 알림 소리를 내지 않고 팝업만 조용히 띄웁니다. 게임·영상의 전체화면 포커스도 빼앗지 않습니다.");
 
@@ -1230,7 +1231,7 @@ public class MainForm : Form
             try
             {
                 Timer upChk = new Timer(); upChk.Interval = 6000;
-                upChk.Tick += delegate { upChk.Stop(); try { Updater.Check(this, VERSION, true); } catch { } };
+                upChk.Tick += delegate { upChk.Stop(); try { Updater.Check(this, VERSION, true, ShowUpdateBadge); } catch { } };
                 upChk.Start();
             }
             catch { }
@@ -1900,7 +1901,7 @@ public class MainForm : Form
             return System.IO.Path.Combine(d, "settings.txt");
         }
     }
-    private const string VERSION = "v1.0 (build 72)";   // 진단 표기용 내부 버전
+    private const string VERSION = "v1.0 (build 73)";   // 진단 표기용 내부 버전
     private int sigClicks = 0; private DateTime sigFirst = DateTime.MinValue;
     private string loadedFrom = null;   // 진단: 설정을 어디서 불러왔는지
     private bool saveErrShown = false;
@@ -3580,6 +3581,38 @@ public class MainForm : Form
         catch (Exception ex) { tray = null; Log("트레이 준비 실패: " + ex.Message); }
     }
 
+    // 새 버전을 찾았을 때 — 팝업으로 막아서지 않고 버전 줄에 표시만 남긴다.
+    // 사용자가 알아서 누르면 되고, 하루 한 번만 트레이 풍선으로 가볍게 귀띔한다.
+    private void ShowUpdateBadge(string tag)
+    {
+        try
+        {
+            if (lblVerSet != null && !lblVerSet.IsDisposed)
+            {
+                lblVerSet.Text = "자동 종료 타이머 " + VERSION + "   ·   새 버전 " + tag + " 있음 ▸";
+                lblVerSet.ForeColor = ACCENT;
+                lblVerSet.Font = Fonts.Semi(8.5F);
+                tip.SetToolTip(lblVerSet, "클릭하면 " + tag + " 로 업데이트합니다");
+            }
+        }
+        catch { }
+
+        // 하루 한 번만. 날짜는 설정과 같은 레지스트리 자리에 따로 저장한다.
+        try
+        {
+            string today = DateTime.Now.ToString("yyyyMMdd");
+            string seen = null;
+            using (Microsoft.Win32.RegistryKey rk = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\ShutdownTimer"))
+            { if (rk != null) { object v = rk.GetValue("updNotice"); if (v != null) seen = v.ToString(); } }
+            if (seen == today) return;
+            using (Microsoft.Win32.RegistryKey rk = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\ShutdownTimer"))
+            { if (rk != null) rk.SetValue("updNotice", today); }
+
+            TrayNotify("새 버전 " + tag, "설정 맨 아래 버전 줄을 누르면 업데이트됩니다.");
+        }
+        catch { }
+    }
+
     // 윈도우 기본 알림(트레이 풍선). 트레이 아이콘이 있을 때만 동작.
     private bool TrayNotify(string title, string body)
     {
@@ -3832,7 +3865,7 @@ public static class Updater
 
     /// 새 버전 확인. 네트워크는 백그라운드에서 하고 결과만 UI 스레드로 돌려준다.
     /// silent = true 면 최신이거나 확인에 실패해도 아무것도 띄우지 않는다(시작 시 자동 확인).
-    public static void Check(Form owner, string currentVersion, bool silent)
+    public static void Check(Form owner, string currentVersion, bool silent, Action<string> onNewer)
     {
         if (busy) return;
         busy = true;
@@ -3850,7 +3883,7 @@ public static class Updater
                     {
                         owner.BeginInvoke((MethodInvoker)delegate
                         {
-                            try { Decide(owner, tag, cur, latest, silent); }
+                            try { Decide(owner, tag, cur, latest, silent, onNewer); }
                             catch { }
                             finally { busy = false; }
                         });
@@ -3864,7 +3897,7 @@ public static class Updater
         catch { busy = false; }
     }
 
-    static void Decide(Form owner, string tag, int cur, int latest, bool silent)
+    static void Decide(Form owner, string tag, int cur, int latest, bool silent, Action<string> onNewer)
     {
         if (cur < 0 || latest < 0)
         {
@@ -3882,6 +3915,12 @@ public static class Updater
                     Title, MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
+
+        // 새 버전이 있다 — 어느 경로로 왔든 버전 줄에 표시부터 남긴다.
+        if (onNewer != null) { try { onNewer(tag); } catch { } }
+
+        // 시작 시 자동 확인이면 여기서 끝. 하던 일을 막지 않는다.
+        if (silent) return;
 
         DialogResult r = MessageBox.Show(owner,
             "새 버전이 나왔습니다.\r\n\r\n" +
