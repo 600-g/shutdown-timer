@@ -1381,7 +1381,10 @@ public class MainForm : Form
     {
         CommitAllSteppers();
         ReleaseAlarmEdit();
-        bool onSig = e.Y >= SCRH - 46 && e.Y <= SCRH - 26 && e.X > SCRW / 2 - 60 && e.X < SCRW / 2 + 60;
+        // ⓒ600g 글자는 y 606~619 에 그려지는데, 예전 판정(SCRH-46~-26 = 594~614)은 위쪽이
+        // lblStatus(582~600)에 가려 실효 띠가 14px 뿐이었고 글자 아래 5px 은 반응하지 않았다.
+        // 글자에 맞춰 604~622 로 옮긴다.
+        bool onSig = e.Y >= SCRH - 36 && e.Y <= SCRH - 18 && e.X > SCRW / 2 - 60 && e.X < SCRW / 2 + 60;
         if (onSig)
         {
             if ((DateTime.Now - sigFirst).TotalSeconds > 3) { sigClicks = 0; sigFirst = DateTime.Now; }
@@ -2039,16 +2042,71 @@ public class MainForm : Form
             // 클립보드에 자동 복사 → 채팅에 붙여넣기만 하면 됨
             bool copied = false;
             try { Clipboard.SetText(d.ToString()); copied = true; } catch { }
-            d.AppendLine();
-            if (copied) d.AppendLine("(이 내용이 클립보드에 복사됐습니다. 문제가 있을 때만 붙여넣어 보내주세요.)");
-            string boxTitle = icon == "ok" ? "상태 확인 · 정상" : "상태 확인 · " + VERSION;
-            MessageBox.Show(d.ToString(), boxTitle, MessageBoxButtons.OK, mi);
+            // 화면은 앱 디자인 시트로 띄운다. 클립보드로 나가는 원문(d)은 위에서 이미 복사했고
+            // 지원 요청에 그대로 쓰이므로 한 글자도 바꾸지 않는다.
+            string dump = d.ToString();
+            AppSheet ds = new AppSheet("상태 확인", "v" + VERSION,
+                                       copied ? "내용이 클립보드에 복사됐습니다" : null);
+            Color sc = icon == "ok" ? OKC : (icon == "warn" ? ACCENT : MUTED);
+            if (temp) sc = DANGER;
+            string headline = verdict;
+            string detail = null;
+            int nl = verdict.IndexOf("\r\n");
+            if (nl > 0) { headline = verdict.Substring(0, nl).Trim(); detail = verdict.Substring(nl).Trim(); }
+            if (headline.Length > 2 && (headline[0] == '✓' || headline[0] == '△' || headline[0] == '·' || headline[0] == '⚠'))
+                headline = headline.Substring(1).Trim();
+            ds.SetStatus(headline, sc);
+            if (detail != null) ds.Body.AddSub(detail);
+            ds.Body.AddHead("상세");
+            FillDiagBody(ds.Body, dump);
+            ds.Body.AddGap(6);
+            ds.Body.AddLink("릴리스 페이지 열기", delegate {
+                AppSheet.OpenUrl("https://github.com/600-g/shutdown-timer/releases"); });
+            ds.Tell(this, "닫기");
         }
         catch (Exception ex)
         {
             MessageBox.Show("진단 실패: " + ex.Message, "오류", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
+    // 진단 원문(클립보드용 텍스트)을 시트 블록으로 옮긴다.
+    // 원문 형식을 바꾸지 않고 화면만 앱답게 보이게 하는 방식이라, 지원 워크플로가 그대로 유지된다.
+    private void FillDiagBody(SheetBody body, string dump)
+    {
+        if (body == null || string.IsNullOrEmpty(dump)) return;
+        try
+        {
+            string[] lines = dump.Replace("\r", "").Split('\n');
+            bool inLog = false;
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string t = lines[i].Trim();
+                if (t.Length == 0) continue;
+                if (t.StartsWith("─") || t.StartsWith("[ 상태 ]")) continue;
+                if (t.StartsWith("✓") || t.StartsWith("△") || t.StartsWith("⚠") || t.StartsWith("· 아직")) continue;
+                if (t.StartsWith("아래는 참고용")) continue;
+                if (t.StartsWith("(이 내용이 클립보드")) continue;
+                if (t.StartsWith("──") || t.IndexOf("최근 동작 로그") >= 0)
+                {
+                    inLog = true;
+                    body.AddHead("최근 기록");
+                    continue;
+                }
+                if (inLog) { body.AddLog(t); continue; }
+                int c = t.IndexOf(": ");
+                if (c > 0 && c <= 14)
+                {
+                    string k = t.Substring(0, c), v = t.Substring(c + 2).Trim();
+                    if (v.IndexOf("\\") >= 0 && v.Length > 24) body.AddPath(k, v);
+                    else body.AddKV(k, v);
+                    continue;
+                }
+                body.AddText(t);
+            }
+        }
+        catch { }
+    }
+
     private string loadErr = "";   // 진단: 읽기 실패의 실제 오류
     private void LoadSettings()
     {
