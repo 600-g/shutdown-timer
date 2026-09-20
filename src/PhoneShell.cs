@@ -1928,7 +1928,7 @@ public class MainForm : Form
             return System.IO.Path.Combine(d, "settings.txt");
         }
     }
-    private const string VERSION = "1.0.3";   // 배포 버전 (semver) — 태그 v1.0.1 과 같은 값
+    private const string VERSION = "1.0.0";   // 배포 버전 (semver) — 태그 v1.0.1 과 같은 값
     private int sigClicks = 0; private DateTime sigFirst = DateTime.MinValue;
     private string loadedFrom = null;   // 진단: 설정을 어디서 불러왔는지
     private bool saveErrShown = false;
@@ -2059,9 +2059,6 @@ public class MainForm : Form
             if (detail != null) ds.Body.AddSub(detail);
             ds.Body.AddHead("상세");
             FillDiagBody(ds.Body, dump);
-            ds.Body.AddGap(6);
-            ds.Body.AddLink("릴리스 페이지 열기", delegate {
-                AppSheet.OpenUrl("https://github.com/600-g/shutdown-timer/releases"); });
             ds.Tell(this, "닫기");
         }
         catch (Exception ex)
@@ -3940,7 +3937,6 @@ public static class Updater
     const string ApiUrl  = "https://api.github.com/repos/600-g/shutdown-timer/releases/latest";
     const string ZipUrl  = "https://github.com/600-g/shutdown-timer/releases/latest/download/AutoShutdownTimer.zip";
     const string SiteUrl = "https://600g.net";
-    const string RelUrl  = "https://github.com/600-g/shutdown-timer/releases";
     const string Title   = "자동 종료 타이머";
 
     static bool busy = false;
@@ -4115,53 +4111,45 @@ public static class Updater
     {
         try
         {
+            // 말투 원칙: 팩트는 짧게, 설명은 친근하게. 링크로 내보내지 않고 이 화면에서 끝낸다.
             string myVer = VerText(cur);
             if (state == 0)
             {
-                AppSheet s = new AppSheet("업데이트 확인", myVer, null);
-                s.SetStatus("서버에 닿지 못했습니다", Theme.Muted);
-                s.Body.AddText("인터넷 연결을 확인한 뒤 버전 줄을 다시 눌러주세요.");
-                s.Body.AddGap(6);
-                s.Body.AddLink("릴리스 페이지에서 직접 받기", delegate { AppSheet.OpenUrl(RelUrl + "/latest"); });
+                AppSheet s = new AppSheet("확인하지 못했어요", myVer, null);
+                s.SetStatus("인터넷 연결을 확인해 주세요", Theme.Muted);
+                s.Body.AddText("잠시 뒤에 버전 줄을 다시 눌러보세요.");
                 s.Tell(owner, "닫기");
                 return;
             }
             if (state == 1)
             {
                 AppSheet s = new AppSheet("최신 버전입니다", myVer, null);
-                s.SetStatus("업데이트할 것이 없습니다", Theme.Ok);
-                s.Body.AddHead("이번 버전 내역");
+                s.SetStatus("이대로 쓰시면 돼요", Theme.Ok);
+                s.Body.AddHead("이번 버전에 담긴 것");
                 AppSheet.AddMarkdown(s.Body, notes);
-                s.Body.AddGap(6);
-                s.Body.AddLink("릴리스 페이지 열기", delegate { AppSheet.OpenUrl(RelUrl); });
                 s.Tell(owner, "닫기");
                 return;
             }
             if (state == 3)
             {
-                AppSheet s = new AppSheet("업데이트를 시작하지 못했습니다", myVer, null);
-                s.SetStatus("직접 내려받아 주세요", Theme.Danger);
-                s.Body.AddText("받은 파일의 압축을 풀어 기존 폴더에 덮어쓰면 됩니다.");
-                s.Body.AddGap(6);
-                s.Body.AddLink("600g.net 열기", delegate { AppSheet.OpenUrl(SiteUrl); });
-                s.Body.AddLink("릴리스 페이지 열기", delegate { AppSheet.OpenUrl(RelUrl + "/latest"); });
+                AppSheet s = new AppSheet("지금은 받을 수 없어요", myVer, null);
+                s.SetStatus("잠시 뒤에 다시 해주세요", Theme.Danger);
+                s.Body.AddText("계속 안 되면 600g.net 에서 직접 받으실 수 있어요.");
                 s.Tell(owner, "닫기");
                 return;
             }
 
-            AppSheet up = new AppSheet("새 버전 " + tag, myVer, "지금 쓰는 버전 " + myVer);
-            up.SetStatus("업데이트할 수 있습니다", Theme.Accent);
-            up.Body.AddHead("변경 내역");
+            AppSheet up = new AppSheet("새 버전이 나왔어요", myVer, "지금 " + myVer + " → " + tag);
+            up.SetStatus("바로 받을 수 있어요", Theme.Accent);
+            up.Body.AddHead("새 버전에 담긴 것");
             AppSheet.AddMarkdown(up.Body, notes);
             up.Body.AddGap(8);
-            up.Body.AddSub("앱이 잠깐 닫혔다가 새 버전으로 다시 열립니다.");
+            up.Body.AddSub("앱이 잠깐 닫혔다가 다시 열려요.");
             bool busyPower = false;
             if (PowerBusy != null) { try { busyPower = PowerBusy(); } catch { } }
-            if (busyPower) up.Body.AddWarn("전원 끄기 예약이 진행 중입니다. 업데이트하면 취소됩니다.");
-            up.Body.AddGap(4);
-            up.Body.AddLink("릴리스 페이지 열기", delegate { AppSheet.OpenUrl(RelUrl + "/tag/" + tag); });
+            if (busyPower) up.Body.AddWarn("전원 끄기 예약이 걸려 있어요. 지금 받으면 예약은 취소돼요.");
 
-            if (!up.Ask(owner, "지금 업데이트", "나중에")) return;
+            if (!up.Ask(owner, "지금 받기", "나중에")) return;
             if (!Install(owner)) Sheet(owner, 3, tag, notes, cur);
         }
         catch { }
