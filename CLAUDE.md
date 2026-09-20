@@ -74,19 +74,34 @@ GitHub 직행 주소는 맥과 무관하게 항상 살아 있다:
   - `.NET 4.5` 기본 TLS 는 1.0 이라 GitHub 에 연결되지 않는다. `ServicePointManager.SecurityProtocol = 3072` 을 지우지 말 것.
   - 어떤 실패도 앱을 멈추면 안 된다. 전부 try/catch 이고 조용한 확인은 실패를 알리지 않는다.
 
-### 교체 배치 — 되돌리지 말아야 할 안전장치 4개 (1.0.1, 감사로 발견)
+### ★ `.bat` 은 cmd 로만 실행할 수 있다
+
+`Process.Start` 에 `.bat` 을 `UseShellExecute=false` 로 주면 **윈도우에서 100% 실패**한다
+(CreateProcess 는 PE 이미지만 로드 → 오류 193). 반드시 이 형태여야 한다:
+
+```csharp
+psi = new ProcessStartInfo(Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe",
+                           "/d /c \"\"" + bat + "\"\"");
+psi.UseShellExecute = false;   // 환경 변수를 넘기려면 반드시 false
+```
+
+`UseShellExecute = true` 로 바꾸는 것은 해법이 아니다 — 그러면 `EnvironmentVariables` 가
+`InvalidOperationException` 을 던진다. **1.0.0 의 인앱 업데이트는 이 버그로 한 번도 동작하지 않았다.**
+
+### 교체 배치 — 되돌리지 말아야 할 안전장치 (1.0.1, 감사 2회로 발견)
 
 실행 중인 exe 는 자기를 못 덮어써서 임시 배치가 교체를 대신한다. 이 배치에는 사용자가 앱을 잃지 않게
 하는 장치가 넷 있고, **하나라도 빼면 "업데이트를 눌렀더니 앱이 사라졌다"가 실제로 발생한다.**
 
-1. **배치는 앱이 닫힌 뒤에만 띄운다** — `Install()` 은 배치를 만들어만 두고 `owner.FormClosed` 에서 `Process.Start` 한다.
-   먼저 띄우고 `Application.Exit()` 을 부르면, 종료가 취소됐을 때 배치만 홀로 돌다 살아 있는 exe 를 덮어쓰려다 실패한다.
-   종료가 취소되면 배치를 지우고 `false` 를 반환한다.
+1. **배치를 Exit 앞에서 띄우고, 취소는 센티넬 파일로 알린다** — 뒤에서 띄우면 `Process.Start` 가 실패했을 때
+   앱이 이미 닫혀 있어 알릴 방법이 없다(MessageBox 의 owner 가 Dispose 됨). 먼저 띄우고, 종료가 취소되면
+   `AST_CANCEL` 경로에 파일을 써서 배치가 조용히 물러나게 한다. 배치의 대기 루프가 매 회 이 파일을 확인한다.
 2. **`Updater.Updating` 으로 종료 확인 모달을 건너뛴다** — `OnFormClosing` 의 "예약이 진행 중입니다" 모달이 종료를 붙잡으면
    배치가 대기하다 지친다. **저장된 알림이 하나만 켜져 있어도 `alarmRunning` 이 true 라 거의 모든 사용자가 이 경로를 탄다.**
 3. **대기 타임아웃은 `goto :fail`** — 60초 안에 프로세스가 안 죽으면 교체를 포기한다. 예전엔 그대로 진행해서 덮어쓰기를 시도했다.
-4. **백업 → 교체 → 검증 → 롤백** — `%EXE%.bak` 로 백업하고, copy 의 `errorlevel`·파일 존재·크기(500KB 이상)를 확인하고,
-   어긋나면 `:rollback` 에서 백업을 되돌린다. 제자리 덮어쓰기만 하면 복사가 끊겼을 때 되돌릴 방법이 없다.
+4. **백업 → 교체 → 검증 → 기동 확인 → 그때서야 백업 삭제** — `%EXE%.bak` 로 백업하고 copy 의 `errorlevel`·존재·
+   크기(500KB 이상)를 확인한 뒤, **새 exe 가 실제로 실행되는지 `tasklist` 로 확인**하고 나서 백업을 지운다.
+   어긋나면 `:rollback` 이 복원하고, **복원까지 실패하면 `:lost` 에서 백업을 남기고 깨진 exe 를 실행하지 않는다.**
 
 배치 본문은 **순수 ASCII** 이고 경로는 환경 변수(`AST_EXE`/`AST_DIR`/`AST_PID`)로 넘긴다.
 환경 블록은 유니코드로 전달되므로 한글 사용자명이든 비한국어 윈도우든 안전하다.
