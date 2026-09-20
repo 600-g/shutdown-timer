@@ -1928,7 +1928,7 @@ public class MainForm : Form
             return System.IO.Path.Combine(d, "settings.txt");
         }
     }
-    private const string VERSION = "1.1.0";   // 배포 버전 (semver) — 태그 v1.0.1 과 같은 값
+    private const string VERSION = "1.0.2";   // 배포 버전 (semver) — 태그 v1.0.1 과 같은 값
     private int sigClicks = 0; private DateTime sigFirst = DateTime.MinValue;
     private string loadedFrom = null;   // 진단: 설정을 어디서 불러왔는지
     private bool saveErrShown = false;
