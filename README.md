@@ -99,7 +99,7 @@ mono가 깔린 환경에서:
 ./build.sh
 ```
 
-→ `자동종료타이머.exe` 와 `자동종료타이머.zip` 이 생깁니다.
+→ `AutoShutdownTimer.exe` 와 `AutoShutdownTimer.zip` 이 생깁니다.
 
 ---
 ⓒ 600g · 600g.net

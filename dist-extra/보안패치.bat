@@ -18,10 +18,10 @@ echo   (이 창은 처음 한 번만 실행하면 됩니다)
 echo ============================================================
 echo.
 
-set "EXE=%~dp0자동종료타이머.exe"
+set "EXE=%~dp0AutoShutdownTimer.exe"
 
 if not exist "%EXE%" (
-    echo [오류] 자동종료타이머.exe 를 찾을 수 없습니다.
+    echo [오류] AutoShutdownTimer.exe 를 찾을 수 없습니다.
     echo        이 배치파일과 exe 를 같은 폴더에 두고 실행하세요.
     echo.
     pause
@@ -42,7 +42,7 @@ echo.
 
 echo [3/3] 준비 완료!
 echo.
-echo   이제 자동종료타이머.exe 를 실행하시면 됩니다.
+echo   이제 AutoShutdownTimer.exe 를 실행하시면 됩니다.
 echo   설정과 알림 저장도 정상 동작합니다.
 echo.
 echo ============================================================

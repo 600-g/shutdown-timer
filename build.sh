@@ -5,7 +5,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-OUT_EXE="자동종료타이머.exe"
+OUT_EXE="AutoShutdownTimer.exe"
 
 echo "== 컴파일 =="
 mcs -sdk:4.5 -target:winexe -out:"$OUT_EXE" \
@@ -17,9 +17,8 @@ mcs -sdk:4.5 -target:winexe -out:"$OUT_EXE" \
   src/PhoneShell.cs
 
 echo "== 패키징 (UTF-8 파일명 zip) =="
-# zip 두 개 생성:
-#  - 자동종료타이머.zip : 사람이 직접 받을 때 (한글명)
-#  - AutoShutdownTimer.zip : GitHub Release 자산 (URL 깔끔하도록 영문명, 내용물은 동일)
+# zip 하나: AutoShutdownTimer.zip
+#  - GitHub Release 자산이자 600g.net 이 찾는 이름. 이 이름을 바꾸면 사이트 다운로드가 끊긴다.
 python3 - "$OUT_EXE" <<'PY'
 import sys, zipfile, os
 exe = sys.argv[1]
@@ -33,9 +32,8 @@ def build(zipname):
             with open(src, "rb") as fp:
                 z.writestr(zi, fp.read())
     print(zipname, "생성:", os.path.getsize(zipname), "bytes")
-build("자동종료타이머.zip")
 build("AutoShutdownTimer.zip")
 PY
 
 echo "== 완료 =="
-ls -la "$OUT_EXE" 자동종료타이머.zip AutoShutdownTimer.zip
+ls -la "$OUT_EXE" AutoShutdownTimer.zip

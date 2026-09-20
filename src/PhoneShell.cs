@@ -1887,7 +1887,7 @@ public class MainForm : Form
             return System.IO.Path.Combine(d, "settings.txt");
         }
     }
-    private const string VERSION = "v1.0 (build 70)";   // 진단 표기용 내부 버전
+    private const string VERSION = "v1.0 (build 71)";   // 진단 표기용 내부 버전
     private int sigClicks = 0; private DateTime sigFirst = DateTime.MinValue;
     private string loadedFrom = null;   // 진단: 설정을 어디서 불러왔는지
     private bool saveErrShown = false;
