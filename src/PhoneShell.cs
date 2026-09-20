@@ -1920,7 +1920,7 @@ public class MainForm : Form
             return System.IO.Path.Combine(d, "settings.txt");
         }
     }
-    private const string VERSION = "1.0.1";   // 배포 버전 (semver) — 태그 v1.0.1 과 같은 값
+    private const string VERSION = "1.1.0";   // 배포 버전 (semver) — 태그 v1.0.1 과 같은 값
     private int sigClicks = 0; private DateTime sigFirst = DateTime.MinValue;
     private string loadedFrom = null;   // 진단: 설정을 어디서 불러왔는지
     private bool saveErrShown = false;
@@ -4171,5 +4171,601 @@ public static class Updater
             return false;
         }
         return true;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  앱 스타일 시트(모달) — 윈도우 기본 대화상자 대신 쓰는 화면
+//
+//  이 앱은 아이폰 느낌의 커스텀 UI 인데 안내창만 윈도우 기본이라 확 튀었다.
+//  OpenNoteEditor·FireAlarm 이 쓰던 관습(무테 폼 · 반경 12 · Theme.Card · 1px 테두리)을
+//  그대로 일반화한 것이라 새 색·새 폰트·새 반경을 만들지 않는다.
+//
+//  ★ 색 리터럴을 하나라도 박으면 다크 모드에서 그대로 남는다. 반드시 Theme.* 를 쓸 것.
+//  ★ Fonts.Regular/Semi 는 호출마다 new Font 이고 Dispose 되지 않는다.
+//    그래서 폰트는 생성자에서 만들어 필드로 들고, Paint 안에서는 절대 만들지 않는다.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 시트 본문 — 블록을 쌓아 문서처럼 그리고, 넘치면 스크롤한다.
+public class SheetBody : ScreenPanel
+{
+    private class Blk
+    {
+        public int Kind;
+        public string A, B;
+        public EventHandler Go;
+        public int Indent, Y, H;
+    }
+
+    private const int K_TEXT = 0, K_SUB = 1, K_HEAD = 2, K_BULLET = 3, K_KV = 4;
+    private const int K_PATH = 5, K_LOG = 6, K_LINK = 7, K_GAP = 8, K_RULE = 9, K_WARN = 10;
+
+    public const int CW = 264;
+    private const int KEYW = 84, VALX = 88, VALW = 176;
+
+    private readonly List<Blk> blocks = new List<Blk>();
+    private readonly Font fBody, fSub, fHead, fLog;
+    private int contentH = 0, scroll = 0;
+    private bool dragging = false, moved = false;
+    private int dragY = 0, dragScroll = 0;
+
+    public SheetBody()
+    {
+        fBody = Fonts.Regular(9.5F);
+        fSub  = Fonts.Regular(9F);
+        fHead = Fonts.Semi(9.5F);
+        fLog  = Fonts.Regular(8F);
+        SetStyle(ControlStyles.Selectable, true);
+        TabStop = true;
+        BackColor = Theme.Card;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            try { if (fBody != null) fBody.Dispose(); } catch { }
+            try { if (fSub  != null) fSub.Dispose();  } catch { }
+            try { if (fHead != null) fHead.Dispose(); } catch { }
+            try { if (fLog  != null) fLog.Dispose();  } catch { }
+        }
+        base.Dispose(disposing);
+    }
+
+    private void Add(int kind, string a, string b, int indent, EventHandler go)
+    {
+        Blk k = new Blk();
+        k.Kind = kind; k.A = a; k.B = b; k.Indent = indent; k.Go = go;
+        blocks.Add(k);
+    }
+
+    public void AddText(string t)            { Add(K_TEXT, t, null, 0, null); }
+    public void AddSub(string t)             { Add(K_SUB, t, null, 0, null); }
+    public void AddHead(string t)            { Add(K_HEAD, t, null, 0, null); }
+    public void AddWarn(string t)            { Add(K_WARN, t, null, 0, null); }
+    public void AddBullet(string t, int d)   { Add(K_BULLET, t, null, d, null); }
+    public void AddKV(string k, string v)    { Add(K_KV, k, v, 0, null); }
+    public void AddPath(string k, string p)  { Add(K_PATH, k, p, 0, null); }
+    public void AddLog(string line)          { Add(K_LOG, line, null, 0, null); }
+    public void AddLink(string t, EventHandler go) { Add(K_LINK, t, null, 0, go); }
+    public void AddGap(int px)               { Add(K_GAP, null, null, px, null); }
+    public void AddRule()                    { Add(K_RULE, null, null, 0, null); }
+
+    public bool IsEmpty { get { return blocks.Count == 0; } }
+
+    /// 오프스크린 측정. FireAlarm 이 쓰는 방식과 같다. 4000 은 GDI 안전값(int.MaxValue 금지).
+    private static int Measure(string t, Font f, int w)
+    {
+        if (string.IsNullOrEmpty(t)) return 0;
+        try
+        {
+            using (Bitmap bmp = new Bitmap(1, 1))
+            using (Graphics mg = Graphics.FromImage(bmp))
+                return TextRenderer.MeasureText(mg, t, f, new Size(w, 4000), TextFormatFlags.WordBreak).Height;
+        }
+        catch { return 16; }
+    }
+
+    /// 경로는 GDI 가 공백에서만 끊으므로 역슬래시 단위로 직접 접는다.
+    private static string WrapPath(string p, Font f, int w)
+    {
+        if (string.IsNullOrEmpty(p)) return "";
+        try
+        {
+            string[] parts = p.Replace("/", "\\").Split('\\');
+            StringBuilder outp = new StringBuilder(), line = new StringBuilder();
+            using (Bitmap bmp = new Bitmap(1, 1))
+            using (Graphics mg = Graphics.FromImage(bmp))
+            {
+                for (int i = 0; i < parts.Length; i++)
+                {
+                    string seg = parts[i] + (i < parts.Length - 1 ? "\\" : "");
+                    string cand = line.ToString() + seg;
+                    int cw = TextRenderer.MeasureText(mg, cand, f, new Size(4000, 100), TextFormatFlags.NoPadding).Width;
+                    if (cw > w && line.Length > 0)
+                    {
+                        if (outp.Length > 0) outp.Append("\n");
+                        outp.Append(line.ToString());
+                        line.Length = 0;
+                    }
+                    line.Append(seg);
+                }
+            }
+            if (line.Length > 0) { if (outp.Length > 0) outp.Append("\n"); outp.Append(line.ToString()); }
+            return outp.ToString();
+        }
+        catch { return p; }
+    }
+
+    /// 블록 높이를 재고 필요한 본문 높이를 돌려준다(40~maxH 로 클램프).
+    public int Layout(int maxH)
+    {
+        int y = 0;
+        for (int i = 0; i < blocks.Count; i++)
+        {
+            Blk b = blocks[i];
+            b.Y = y;
+            switch (b.Kind)
+            {
+                case K_HEAD:
+                    b.H = (y == 0 ? 0 : 10) + 18;
+                    break;
+                case K_TEXT:
+                    b.H = Measure(b.A, fBody, CW) + 4;
+                    break;
+                case K_SUB:
+                    b.H = Measure(b.A, fSub, CW) + 3;
+                    break;
+                case K_WARN:
+                    b.H = Measure(b.A, fSub, CW - 9) + 6;
+                    break;
+                case K_BULLET:
+                    b.H = Measure(b.A, fBody, CW - 14 - b.Indent * 12) + 4;
+                    break;
+                case K_KV:
+                    {
+                        int hk = Measure(b.A, fSub, KEYW), hv = Measure(b.B, fSub, VALW);
+                        b.H = (hk > hv ? hk : hv) + 5;
+                    }
+                    break;
+                case K_PATH:
+                    {
+                        b.B = WrapPath(b.B, fLog, VALW);
+                        int hk = Measure(b.A, fSub, KEYW), hv = Measure(b.B, fLog, VALW);
+                        b.H = (hk > hv ? hk : hv) + 5;
+                    }
+                    break;
+                case K_LOG:  b.H = 14; break;
+                case K_LINK: b.H = 24; break;
+                case K_GAP:  b.H = b.Indent; break;
+                case K_RULE: b.H = 9; break;
+                default:     b.H = 16; break;
+            }
+            y += b.H;
+        }
+        contentH = y;
+        int h = contentH;
+        if (h > maxH) h = maxH;
+        if (h < 40) h = 40;
+        return h;
+    }
+
+    public bool Scrollable { get { return contentH > Height; } }
+
+    private void ScrollBy(int dy)
+    {
+        int max = contentH - Height;
+        if (max < 0) max = 0;
+        int n = scroll + dy;
+        if (n < 0) n = 0;
+        if (n > max) n = max;
+        if (n != scroll) { scroll = n; Invalidate(); }
+    }
+
+    public bool HandleKey(Keys k)
+    {
+        if (!Scrollable) return false;
+        if (k == Keys.Down)      { ScrollBy(36);  return true; }
+        if (k == Keys.Up)        { ScrollBy(-36); return true; }
+        if (k == Keys.PageDown)  { ScrollBy(Height - 24);  return true; }
+        if (k == Keys.PageUp)    { ScrollBy(-(Height - 24)); return true; }
+        if (k == Keys.Home)      { ScrollBy(-contentH); return true; }
+        if (k == Keys.End)       { ScrollBy(contentH);  return true; }
+        return false;
+    }
+
+    protected override void OnMouseEnter(EventArgs e)
+    {
+        base.OnMouseEnter(e);
+        try { Focus(); } catch { }
+    }
+
+    protected override void OnMouseWheel(MouseEventArgs e)
+    {
+        base.OnMouseWheel(e);
+        ScrollBy(-e.Delta * 40 / 120);
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        dragging = true; moved = false; dragY = e.Y; dragScroll = scroll;
+        try { Focus(); } catch { }
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        if (dragging)
+        {
+            int dy = dragY - e.Y;
+            if (dy > 3 || dy < -3) moved = true;
+            int max = contentH - Height;
+            if (max < 0) max = 0;
+            int n = dragScroll + dy;
+            if (n < 0) n = 0;
+            if (n > max) n = max;
+            if (n != scroll) { scroll = n; Invalidate(); }
+            return;
+        }
+        Cursor = HitLink(e.Y) != null ? Cursors.Hand : Cursors.Default;
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        bool wasDrag = moved;
+        dragging = false; moved = false;
+        if (wasDrag) return;
+        EventHandler go = HitLink(e.Y);
+        if (go != null) { try { go(this, EventArgs.Empty); } catch { } }
+    }
+
+    private EventHandler HitLink(int mouseY)
+    {
+        int y = mouseY + scroll;
+        for (int i = 0; i < blocks.Count; i++)
+        {
+            Blk b = blocks[i];
+            if (b.Kind == K_LINK && b.Go != null && y >= b.Y && y < b.Y + b.H) return b.Go;
+        }
+        return null;
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.PixelOffsetMode = PixelOffsetMode.Half;
+        g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+        g.Clear(Theme.Card);
+
+        int top = scroll, bot = scroll + Height;
+        for (int i = 0; i < blocks.Count; i++)
+        {
+            Blk b = blocks[i];
+            if (b.Y + b.H < top || b.Y > bot) continue;
+            int y = b.Y - scroll;
+            switch (b.Kind)
+            {
+                case K_HEAD:
+                    TextRenderer.DrawText(g, b.A, fHead, new Rectangle(0, y + (b.Y == 0 ? 0 : 10), CW, 18),
+                        Theme.Muted, TextFormatFlags.Left | TextFormatFlags.NoPadding);
+                    break;
+                case K_TEXT:
+                    TextRenderer.DrawText(g, b.A, fBody, new Rectangle(0, y, CW, b.H),
+                        Theme.Ink, TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
+                    break;
+                case K_SUB:
+                    TextRenderer.DrawText(g, b.A, fSub, new Rectangle(0, y, CW, b.H),
+                        Theme.Muted, TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
+                    break;
+                case K_WARN:
+                    using (GraphicsPath bar = AppButton.Round(new Rectangle(0, y + 1, 2, b.H - 6), 1))
+                    using (SolidBrush sb = new SolidBrush(Theme.Danger)) g.FillPath(sb, bar);
+                    TextRenderer.DrawText(g, b.A, fSub, new Rectangle(9, y, CW - 9, b.H),
+                        Theme.Danger, TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
+                    break;
+                case K_BULLET:
+                    {
+                        int ix = 3 + b.Indent * 12;
+                        using (SolidBrush sb = new SolidBrush(Theme.Muted)) g.FillEllipse(sb, ix, y + 7, 3, 3);
+                        TextRenderer.DrawText(g, b.A, fBody, new Rectangle(ix + 11, y, CW - ix - 11, b.H),
+                            Theme.Ink, TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
+                    }
+                    break;
+                case K_KV:
+                    TextRenderer.DrawText(g, b.A, fSub, new Rectangle(0, y, KEYW, b.H),
+                        Theme.Muted, TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
+                    TextRenderer.DrawText(g, b.B, fSub, new Rectangle(VALX, y, VALW, b.H),
+                        Theme.Ink, TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
+                    break;
+                case K_PATH:
+                    TextRenderer.DrawText(g, b.A, fSub, new Rectangle(0, y, KEYW, b.H),
+                        Theme.Muted, TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
+                    TextRenderer.DrawText(g, b.B, fLog, new Rectangle(VALX, y, VALW, b.H),
+                        Theme.Hint, TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
+                    break;
+                case K_LOG:
+                    TextRenderer.DrawText(g, b.A, fLog, new Rectangle(0, y, CW, 14),
+                        Theme.Hint, TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+                    break;
+                case K_LINK:
+                    TextRenderer.DrawText(g, b.A + "  ▸", fHead, new Rectangle(0, y, CW, 24),
+                        Theme.Accent, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                    break;
+                case K_RULE:
+                    using (Pen p = new Pen(Theme.Border, 1F)) g.DrawLine(p, 0, y + 4, CW, y + 4);
+                    break;
+            }
+        }
+
+        if (contentH > Height)
+        {
+            int trackH = Height, th = trackH * trackH / contentH;
+            if (th < 24) th = 24;
+            int max = contentH - Height;
+            int ty = max > 0 ? (trackH - th) * scroll / max : 0;
+            using (GraphicsPath tp = AppButton.Round(new Rectangle(Width - 4, ty, 3, th), 2))
+            using (SolidBrush sb = new SolidBrush(Theme.ToggleOff)) g.FillPath(sb, tp);
+        }
+    }
+}
+
+/// 앱 스타일 모달 시트. 제목 · (부제) · (상태줄) · 본문 · 버튼.
+public class AppSheet : Form
+{
+    public SheetBody Body;
+
+    private const int SW = 300, PAD = 18;
+    private readonly string title, hint, sub;
+    private string statusText = null;
+    private Color statusColor = Color.Empty;
+    private readonly Font fTitle, fHint, fSub, fStatus;
+    private int sy, by, bodyH;
+    private bool ok = false;
+    private bool moving = false;
+    private Point downPt;
+
+    public AppSheet(string titleText, string rightHint, string subText)
+    {
+        title = titleText; hint = rightHint; sub = subText;
+        fTitle  = Fonts.Semi(11F);
+        fHint   = Fonts.Regular(8F);
+        fSub    = Fonts.Regular(8.5F);
+        fStatus = Fonts.Semi(9F);
+
+        FormBorderStyle = FormBorderStyle.None;
+        ShowInTaskbar = false;
+        StartPosition = FormStartPosition.Manual;
+        BackColor = Theme.Card;
+        KeyPreview = true;
+        MaximizeBox = false; MinimizeBox = false;
+
+        Body = new SheetBody();
+        Controls.Add(Body);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            try { fTitle.Dispose(); }  catch { }
+            try { fHint.Dispose(); }   catch { }
+            try { fSub.Dispose(); }    catch { }
+            try { fStatus.Dispose(); } catch { }
+        }
+        base.Dispose(disposing);
+    }
+
+    public void SetStatus(string text, Color c) { statusText = text; statusColor = c; }
+
+    private void Build()
+    {
+        sy = sub != null ? 54 : 36;
+        by = statusText != null ? sy + 24 : (sub != null ? 56 : 40);
+        bodyH = Body.Layout(400);
+        int sh = by + bodyH + 12 + 46;
+        ClientSize = new Size(SW, sh);
+        Body.SetBounds(PAD, by, SheetBody.CW, bodyH);
+        try { Region = new Region(AppButton.Round(new Rectangle(0, 0, SW, sh), 12)); } catch { }
+    }
+
+    private AppButton MakeBtn(string text, bool primary)
+    {
+        AppButton b = new AppButton();
+        b.Text = text;
+        b.Font = Fonts.Semi(11F);
+        b.Radius = 9;
+        if (!primary)
+        {
+            b.Fill = Theme.CancelFill; b.FillHover = Theme.CancelHover; b.FillDown = Theme.CancelDown;
+            b.TextColor = Theme.CancelText; b.BorderColor = Theme.CancelBorder;
+        }
+        Controls.Add(b);
+        return b;
+    }
+
+    private void Place(Form owner)
+    {
+        try
+        {
+            Rectangle wa = Screen.FromControl(owner != null ? (Control)owner : this).WorkingArea;
+            int x, y;
+            if (owner != null)
+            {
+                x = owner.Left + (owner.Width - Width) / 2;
+                y = owner.Top + (owner.Height - Height) / 2;
+            }
+            else { x = wa.Left + (wa.Width - Width) / 2; y = wa.Top + (wa.Height - Height) / 2; }
+            if (x < wa.Left) x = wa.Left;
+            if (y < wa.Top) y = wa.Top;
+            if (x + Width > wa.Right) x = wa.Right - Width;
+            if (y + Height > wa.Bottom) y = wa.Bottom - Height;
+            Location = new Point(x, y);
+        }
+        catch { }
+    }
+
+    /// 두 버튼(주/보조). 주 버튼을 눌렀으면 true.
+    public bool Ask(Form owner, string yes, string no)
+    {
+        Build();
+        int bw = (SheetBody.CW - 8) / 2, byy = ClientSize.Height - 46;
+        AppButton a = MakeBtn(yes, true);  a.SetBounds(PAD, byy, bw, 34);
+        AppButton c = MakeBtn(no, false);  c.SetBounds(PAD + bw + 8, byy, bw, 34);
+        a.Click += delegate { ok = true; try { Close(); } catch { } };
+        c.Click += delegate { ok = false; try { Close(); } catch { } };
+        Show(owner, false);
+        return ok;
+    }
+
+    /// 버튼 하나(풀폭).
+    public void Tell(Form owner, string close)
+    {
+        Build();
+        AppButton c = MakeBtn(close, true);
+        c.SetBounds(PAD, ClientSize.Height - 46, SheetBody.CW, 34);
+        c.Click += delegate { try { Close(); } catch { } };
+        Show(owner, false);
+    }
+
+    /// 주 버튼이 닫기가 아닌 동작인 1버튼 + 보조. extra 가 null 이면 Tell 과 같다.
+    private void Show(Form owner, bool dummy)
+    {
+        Place(owner);
+        try { ShowDialog(owner); } catch { }
+        try { Dispose(); } catch { }
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        base.OnKeyDown(e);
+        if (e.KeyCode == Keys.Escape) { ok = false; try { Close(); } catch { } return; }
+        if (Body != null && Body.HandleKey(e.KeyCode)) { e.Handled = true; }
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (e.Y < 34) { moving = true; downPt = new Point(e.X, e.Y); }
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        if (moving) Location = new Point(Left + e.X - downPt.X, Top + e.Y - downPt.Y);
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e) { base.OnMouseUp(e); moving = false; }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.PixelOffsetMode = PixelOffsetMode.Half;
+        g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+
+        int w = ClientSize.Width, h = ClientSize.Height;
+        using (GraphicsPath bp = AppButton.Round(new Rectangle(0, 0, w - 1, h - 1), 12))
+        {
+            using (SolidBrush b = new SolidBrush(Theme.Card)) g.FillPath(b, bp);
+            using (Pen p = new Pen(Theme.Border, 1F)) g.DrawPath(p, bp);
+        }
+
+        TextRenderer.DrawText(g, title, fTitle, new Rectangle(PAD, 14, SheetBody.CW, 20),
+            Theme.Ink, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        if (!string.IsNullOrEmpty(hint))
+            TextRenderer.DrawText(g, hint, fHint, new Rectangle(PAD, 14, SheetBody.CW, 20),
+                Theme.Hint, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        if (sub != null)
+            TextRenderer.DrawText(g, sub, fSub, new Rectangle(PAD, 34, SheetBody.CW, 16),
+                Theme.Muted, TextFormatFlags.Left | TextFormatFlags.NoPadding);
+        if (statusText != null)
+        {
+            using (SolidBrush b = new SolidBrush(statusColor)) g.FillEllipse(b, PAD + 1, sy + 7, 7, 7);
+            TextRenderer.DrawText(g, statusText, fStatus, new Rectangle(PAD + 14, sy, SheetBody.CW - 14, 20),
+                statusColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        }
+        using (Pen p = new Pen(Theme.Border, 1F)) g.DrawLine(p, 0, h - 56, w, h - 56);
+    }
+
+    /// 브라우저 열기. 이 앱은 관리자로 뜨므로 explorer 를 거쳐야 브라우저가 일반 권한으로 열린다.
+    public static void OpenUrl(string url)
+    {
+        try { Process.Start("explorer.exe", url); return; }
+        catch { }
+        try
+        {
+            ProcessStartInfo psi = new ProcessStartInfo(url);
+            psi.UseShellExecute = true;
+            Process.Start(psi);
+        }
+        catch { }
+    }
+
+    /// 릴리스 본문(마크다운)을 블록으로 옮긴다. CHANGELOG 의 한 절이 그대로 들어온다.
+    public static void AddMarkdown(SheetBody body, string md)
+    {
+        if (body == null) return;
+        if (string.IsNullOrEmpty(md)) { body.AddSub("변경 내역을 불러오지 못했습니다."); return; }
+        try
+        {
+            string[] lines = md.Replace("\r", "").Split('\n');
+            bool lastGap = true;
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string raw = lines[i].TrimEnd();
+                string t = raw.TrimStart();
+                if (t.Length == 0)
+                {
+                    if (!lastGap) { body.AddGap(6); lastGap = true; }
+                    continue;
+                }
+                lastGap = false;
+                int lead = raw.Length - t.Length;
+                if (t.StartsWith("#"))
+                {
+                    int n = 0;
+                    while (n < t.Length && t[n] == '#') n++;
+                    body.AddHead(StripInline(t.Substring(n).Trim()));
+                }
+                else if (t.StartsWith("- ") || t.StartsWith("* ") || t.StartsWith("+ "))
+                    body.AddBullet(StripInline(t.Substring(2).Trim()), lead >= 2 ? 1 : 0);
+                else
+                {
+                    int dot = t.IndexOf(". ");
+                    bool numbered = dot > 0 && dot <= 3;
+                    if (numbered)
+                        for (int k = 0; k < dot; k++) if (t[k] < '0' || t[k] > '9') { numbered = false; break; }
+                    if (numbered) body.AddBullet(StripInline(t), lead >= 2 ? 1 : 0);
+                    else body.AddText(StripInline(t));
+                }
+            }
+        }
+        catch { body.AddSub("변경 내역을 읽지 못했습니다."); }
+    }
+
+    /// 굵게·코드·링크 마크업만 걷어낸다.
+    private static string StripInline(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return "";
+        try
+        {
+            s = s.Replace("**", "").Replace("__", "").Replace("`", "");
+            int guard = 0;
+            while (guard++ < 20)
+            {
+                int a = s.IndexOf('[');
+                if (a < 0) break;
+                int b = s.IndexOf("](", a);
+                if (b < 0) break;
+                int c = s.IndexOf(')', b);
+                if (c < 0) break;
+                s = s.Substring(0, a) + s.Substring(a + 1, b - a - 1) + s.Substring(c + 1);
+            }
+            return s;
+        }
+        catch { return s; }
     }
 }
