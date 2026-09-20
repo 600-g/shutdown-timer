@@ -755,8 +755,9 @@ public class MainForm : Form
     private IosStepper numMinutes;
     private AppButton btnStart, btnCancel, btnTest;
 
-    private Label lblCountdown, lblStatus, lblEta;
-    private Label lblVerSet;            // 설정 맨 아래 버전 줄 — 새 버전이 있으면 여기에 배지를 단다 private Timer etaTimer; private bool presetCentered = false;
+    private Label lblCountdown, lblStatus, lblEta; private Timer etaTimer; private bool presetCentered = false;
+    // 설정 맨 아래 버전 줄 — 새 버전이 있으면 여기에 배지를 단다
+    private Label lblVerSet;
 
     private Panel panelFail;                     // 실패 시에만 노출
     private Label lblFail;
