@@ -1134,7 +1134,7 @@ public class MainForm : Form
         // 3) 정보
         Label sg4 = new Label(); sg4.Text = "정보"; sg4.Font = Fonts.Semi(9.5F); sg4.ForeColor = MUTED;
         sg4.Location = new Point(2, 310); sg4.AutoSize = true; sg4.BackColor = BG; panelSet.Controls.Add(sg4);
-        lblVerSet = new Label(); lblVerSet.Text = "자동 종료 타이머 " + VERSION;
+        lblVerSet = new Label(); lblVerSet.Text = "자동 종료 타이머 v" + VERSION;
         lblVerSet.Font = Fonts.Regular(8.5F); lblVerSet.ForeColor = MUTED;
         lblVerSet.Location = new Point(2, 328); lblVerSet.AutoSize = true; lblVerSet.BackColor = BG; panelSet.Controls.Add(lblVerSet);
         // 버전 줄을 누르면 수동으로 업데이트 확인 (새 버튼을 놓을 자리가 없어 라벨 자체를 버튼처럼 쓴다)
@@ -1902,7 +1902,7 @@ public class MainForm : Form
             return System.IO.Path.Combine(d, "settings.txt");
         }
     }
-    private const string VERSION = "v1.0 (build 73)";   // 진단 표기용 내부 버전
+    private const string VERSION = "1.0.0";   // 배포 버전 (semver) — 태그 v1.0.0 과 같은 값
     private int sigClicks = 0; private DateTime sigFirst = DateTime.MinValue;
     private string loadedFrom = null;   // 진단: 설정을 어디서 불러왔는지
     private bool saveErrShown = false;
@@ -3590,7 +3590,7 @@ public class MainForm : Form
         {
             if (lblVerSet != null && !lblVerSet.IsDisposed)
             {
-                lblVerSet.Text = "자동 종료 타이머 " + VERSION + "   ·   새 버전 " + tag + " 있음 ▸";
+                lblVerSet.Text = "자동 종료 타이머 v" + VERSION + "   ·   새 버전 " + tag + " 있음 ▸";
                 lblVerSet.ForeColor = ACCENT;
                 lblVerSet.Font = Fonts.Semi(8.5F);
                 tip.SetToolTip(lblVerSet, "클릭하면 " + tag + " 로 업데이트합니다");
@@ -3829,18 +3829,80 @@ public static class Updater
 
     static bool busy = false;
 
-    /// "v1.0 (build 71)" · "v1.0.71" 양쪽에서 끝 숫자를 뽑는다. 실패하면 -1.
-    public static int ParseBuild(string s)
+    /// "1.0.0" · "v1.2.3" 에서 비교 가능한 숫자를 만든다. 실패하면 -1.
+    ///
+    /// ★ 끝 숫자만 비교하면 안 된다 — 1.1.0 의 끝은 0 이라 1.0.9 보다 작아진다.
+    ///   반드시 major·minor·patch 를 자리별로 비교해야 한다.
+    public static long ParseVer(string s)
     {
         if (string.IsNullOrEmpty(s)) return -1;
         System.Text.RegularExpressions.Match m =
-            System.Text.RegularExpressions.Regex.Match(s, @"(\d+)\D*$");
+            System.Text.RegularExpressions.Regex.Match(s, @"(\d+)\.(\d+)\.(\d+)");
         if (!m.Success) return -1;
-        try { return int.Parse(m.Groups[1].Value); } catch { return -1; }
+        try
+        {
+            long a = long.Parse(m.Groups[1].Value);
+            long b = long.Parse(m.Groups[2].Value);
+            long c = long.Parse(m.Groups[3].Value);
+            if (a > 9999 || b > 999 || c > 999) return -1;
+            return a * 1000000L + b * 1000L + c;
+        }
+        catch { return -1; }
     }
 
-    /// 최신 릴리스 태그(v1.0.NN). 실패하면 null — 네트워크 없음·차단·차단된 방화벽 전부 여기로.
-    static string FetchLatestTag()
+    /// JSON 에서 문자열 값 하나만 꺼낸다 (\n \" \uXXXX 정도만 푼다).
+    /// 릴리스 본문을 읽으려고 JSON 라이브러리를 끌어오고 싶지 않아서 최소한으로 쓴다.
+    static string JsonStr(string json, string key)
+    {
+        try
+        {
+            int i = json.IndexOf("\"" + key + "\"");
+            if (i < 0) return null;
+            i = json.IndexOf(':', i);
+            if (i < 0) return null;
+            while (i < json.Length && json[i] != '"') i++;
+            if (i >= json.Length) return null;
+            i++;
+            StringBuilder sb = new StringBuilder();
+            while (i < json.Length)
+            {
+                char c = json[i];
+                if (c == '\\' && i + 1 < json.Length)
+                {
+                    char n = json[i + 1];
+                    if (n == 'n') sb.Append('\n');
+                    else if (n == 'r') { }
+                    else if (n == 't') sb.Append(' ');
+                    else if (n == 'u' && i + 5 < json.Length)
+                    {
+                        try { sb.Append((char)Convert.ToInt32(json.Substring(i + 2, 4), 16)); } catch { }
+                        i += 4;
+                    }
+                    else sb.Append(n);
+                    i += 2;
+                    continue;
+                }
+                if (c == '"') break;
+                sb.Append(c);
+                i++;
+            }
+            return sb.ToString();
+        }
+        catch { return null; }
+    }
+
+    /// 최신 릴리스의 태그와 변경 내역. 실패하면 둘 다 null.
+    static void FetchLatest(out string tag, out string notes)
+    {
+        tag = null; notes = null;
+        string body = FetchLatestJson();
+        if (body == null) return;
+        tag = JsonStr(body, "tag_name");
+        notes = JsonStr(body, "body");
+    }
+
+    /// 최신 릴리스 JSON 원문. 실패하면 null — 네트워크 없음·차단·방화벽 전부 여기로.
+    static string FetchLatestJson()
     {
         // .NET 4.5 기본값은 TLS 1.0 이라 GitHub 에 연결되지 않는다. 1.2 를 명시해야 한다.
         try { ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072; } catch { }
@@ -3855,10 +3917,7 @@ public static class Updater
             using (Stream st = res.GetResponseStream())
             using (StreamReader sr = new StreamReader(st, Encoding.UTF8))
             {
-                string body = sr.ReadToEnd();
-                System.Text.RegularExpressions.Match m =
-                    System.Text.RegularExpressions.Regex.Match(body, "\"tag_name\"\\s*:\\s*\"([^\"]+)\"");
-                return m.Success ? m.Groups[1].Value : null;
+                return sr.ReadToEnd();
             }
         }
         catch { return null; }
@@ -3870,21 +3929,21 @@ public static class Updater
     {
         if (busy) return;
         busy = true;
-        int cur = ParseBuild(currentVersion);
+        long cur = ParseVer(currentVersion);
         try
         {
             System.Threading.ThreadPool.QueueUserWorkItem(delegate
             {
-                string tag = null;
-                try { tag = FetchLatestTag(); } catch { }
-                int latest = ParseBuild(tag);
+                string tag = null, notes = null;
+                try { FetchLatest(out tag, out notes); } catch { }
+                long latest = ParseVer(tag);
                 try
                 {
                     if (owner != null && !owner.IsDisposed && owner.IsHandleCreated)
                     {
                         owner.BeginInvoke((MethodInvoker)delegate
                         {
-                            try { Decide(owner, tag, cur, latest, silent, onNewer); }
+                            try { Decide(owner, tag, notes, cur, latest, silent, onNewer); }
                             catch { }
                             finally { busy = false; }
                         });
@@ -3898,7 +3957,7 @@ public static class Updater
         catch { busy = false; }
     }
 
-    static void Decide(Form owner, string tag, int cur, int latest, bool silent, Action<string> onNewer)
+    static void Decide(Form owner, string tag, string notes, long cur, long latest, bool silent, Action<string> onNewer)
     {
         if (cur < 0 || latest < 0)
         {
@@ -3912,7 +3971,7 @@ public static class Updater
         {
             if (!silent)
                 MessageBox.Show(owner,
-                    "최신 버전을 쓰고 있습니다.  (build " + cur + ")",
+                    "최신 버전을 쓰고 있습니다.",
                     Title, MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
@@ -3924,10 +3983,9 @@ public static class Updater
         if (silent) return;
 
         DialogResult r = MessageBox.Show(owner,
-            "새 버전이 나왔습니다.\r\n\r\n" +
-            "    지금 버전 :  build " + cur + "\r\n" +
-            "    새 버전    :  " + tag + "\r\n\r\n" +
-            "지금 업데이트할까요?\r\n" +
+            "새 버전 " + tag + " 이(가) 나왔습니다.\r\n" +
+            Trim(notes) +
+            "\r\n지금 업데이트할까요?\r\n" +
             "앱이 잠깐 닫혔다가 새 버전으로 다시 열립니다.\r\n" +
             "예약해 둔 타이머가 있으면 먼저 끝내고 하세요.",
             Title, MessageBoxButtons.YesNo, MessageBoxIcon.Question);
@@ -3937,6 +3995,28 @@ public static class Updater
             MessageBox.Show(owner,
                 "업데이트를 시작하지 못했습니다.\r\n600g.net 에서 직접 받아주세요.",
                 Title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+    }
+
+    /// 릴리스 변경 내역을 대화상자에 넣기 좋게 다듬는다. 없으면 빈 문자열.
+    /// 마크다운 제목(#)과 빈 줄을 걷어내고 12줄까지만 보여준다.
+    static string Trim(string notes)
+    {
+        if (string.IsNullOrEmpty(notes)) return "\r\n";
+        try
+        {
+            List<string> keep = new List<string>();
+            foreach (string raw in notes.Replace("\r", "").Split('\n'))
+            {
+                string ln = raw.Trim();
+                if (ln.Length == 0 || ln.StartsWith("#")) continue;
+                if (ln.Length > 70) ln = ln.Substring(0, 68) + "…";
+                keep.Add("    " + ln);
+                if (keep.Count >= 12) { keep.Add("    …"); break; }
+            }
+            if (keep.Count == 0) return "\r\n";
+            return "\r\n" + string.Join("\r\n", keep.ToArray()) + "\r\n";
+        }
+        catch { return "\r\n"; }
     }
 
     /// 교체 배치를 만들어 띄우고 앱을 끝낸다. 성공적으로 띄웠으면 true.

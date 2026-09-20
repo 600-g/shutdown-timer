@@ -10,16 +10,18 @@ rem  (번호가 이미 릴리스된 것이면 push 전에 멈추고 알려준다)
 where git >nul 2>nul || (echo [오류] git 이 설치돼 있지 않습니다. https://git-scm.com 에서 설치 후 다시 실행 & pause & exit /b 1)
 if not exist ".git" (echo [오류] 이 폴더는 git 저장소가 아닙니다. README.md 의 "최초 업로드" 를 먼저 진행하세요. & pause & exit /b 1)
 
-set BUILD=
-for /f "tokens=2 delims=()" %%a in ('findstr /c:"VERSION = " src\PhoneShell.cs') do set VERLINE=%%a
-for /f "tokens=2" %%b in ("%VERLINE%") do set BUILD=%%b
-if "%BUILD%"=="" (echo [오류] 소스에서 build 번호를 찾지 못했습니다. & pause & exit /b 1)
+set VERLINE=
+for /f "tokens=2 delims==" %%a in ('findstr /c:"VERSION = " src\PhoneShell.cs') do set VERLINE=%%a
+for /f "tokens=1 delims=;" %%b in ("%VERLINE%") do set VER=%%~b
+set VER=%VER: =%
+set VER=%VER:"=%
+if "%VER%"=="" (echo [오류] 소스에서 버전을 찾지 못했습니다. & pause & exit /b 1)
 
-set TAG=v1.0.%BUILD%
+set TAG=v%VER%
 git ls-remote --exit-code --tags origin refs/tags/%TAG% >nul 2>nul
 if not errorlevel 1 (
     echo [중지] %TAG% 는 이미 릴리스돼 있습니다.
-    echo        src\PhoneShell.cs 의  VERSION = "v1.0 (build %BUILD%)"  번호를 올린 뒤 다시 실행하세요.
+    echo        src\PhoneShell.cs 의 VERSION 을 올리고 CHANGELOG.md 에 항목을 추가한 뒤 다시 실행하세요.
     pause
     exit /b 1
 )
