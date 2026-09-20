@@ -1228,15 +1228,24 @@ public class MainForm : Form
         {
             SetPlaceholder(txtMsg, "알림 내용 (비우면 \"시간이 되었습니다\")");
             SetPlaceholder(txtProg, "프로그램 이름 · 예: chrome.exe");
-            // 시작 직후는 백신 행위감시가 예민하므로 6초 뒤에 조용히 새 버전만 확인한다.
-            try
-            {
-                Timer upChk = new Timer(); upChk.Interval = 6000;
-                upChk.Tick += delegate { upChk.Stop(); try { Updater.Check(this, VERSION, true, ShowUpdateBadge); } catch { } };
-                upChk.Start();
-            }
-            catch { }
         };
+
+        // 업데이트 확인은 창 표시와 분리한다.
+        // --tray 로 자동 실행되면 Shown 이 아예 발생하지 않아(SetVisibleCore 가 막는다),
+        // 트레이 상주로만 쓰는 사용자는 새 버전을 영영 못 받게 된다.
+        // 첫 확인은 6초 뒤(백신 행위감시가 예민한 구간을 피한다), 이후 6시간마다.
+        try
+        {
+            Timer upChk = new Timer();
+            upChk.Interval = 6000;
+            upChk.Tick += delegate
+            {
+                upChk.Interval = 6 * 60 * 60 * 1000;
+                try { Updater.Check(this, VERSION, true, ShowUpdateBadge); } catch { }
+            };
+            upChk.Start();
+        }
+        catch { }
         if (loadedFrom != null)
         {
             // 하단에 "설정 불러옴 · 레지스트리 · 알림 N개" 같은 안내는 표시하지 않는다.
@@ -1902,7 +1911,7 @@ public class MainForm : Form
             return System.IO.Path.Combine(d, "settings.txt");
         }
     }
-    private const string VERSION = "1.0.0";   // 배포 버전 (semver) — 태그 v1.0.0 과 같은 값
+    private const string VERSION = "1.0.1";   // 배포 버전 (semver) — 태그 v1.0.1 과 같은 값
     private int sigClicks = 0; private DateTime sigFirst = DateTime.MinValue;
     private string loadedFrom = null;   // 진단: 설정을 어디서 불러왔는지
     private bool saveErrShown = false;
@@ -3686,7 +3695,10 @@ public class MainForm : Form
             return;
         }
 
-        if (powerRunning || alarmRunning)
+        // 업데이트로 인한 종료일 때는 묻지 않는다. 여기서 모달이 뜨면 종료가 멈추는데
+        // 교체 배치는 기다리다 지쳐 진행해버려서, 살아 있는 앱을 덮어쓰려다 실패하고
+        // 사용자 눈에는 "업데이트를 눌렀더니 앱이 사라졌다"로 보인다.
+        if (!Updater.Updating && (powerRunning || alarmRunning))
         {
             if (MessageBox.Show("예약이 진행 중입니다. 종료할까요?", "확인",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.No)
@@ -3828,6 +3840,10 @@ public static class Updater
     const string Title   = "자동 종료 타이머";
 
     static bool busy = false;
+
+    /// 업데이트 때문에 종료하는 중. MainForm 의 종료 확인 모달을 건너뛰게 한다.
+    /// 그 모달이 종료를 붙잡으면 교체 배치가 먼저 진행해버려 앱을 잃는다.
+    public static bool Updating = false;
 
     /// "1.0.0" · "v1.2.3" 에서 비교 가능한 숫자를 만든다. 실패하면 -1.
     ///
@@ -4019,29 +4035,38 @@ public static class Updater
         catch { return "\r\n"; }
     }
 
-    /// 교체 배치를 만들어 띄우고 앱을 끝낸다. 성공적으로 띄웠으면 true.
+    /// 교체 배치를 만들고, **앱이 실제로 닫힌 뒤에만** 실행한다.
+    /// 종료가 취소되면 만든 배치를 지우고 false 를 돌려준다.
     static bool Install(Form owner)
     {
+        string bat = null;
+        ProcessStartInfo psi = null;
         try
         {
             string exePath = Application.ExecutablePath;
             string dir     = Path.GetDirectoryName(exePath);
             int    pid     = Process.GetCurrentProcess().Id;
-            string bat     = Path.Combine(Path.GetTempPath(),
-                                 "ast_update_" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".bat");
+            bat = Path.Combine(Path.GetTempPath(),
+                      "ast_update_" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".bat");
 
+            // 배치 본문은 **순수 ASCII** 로만 만든다. 경로는 환경 변수로 넘긴다 —
+            // 환경 블록은 유니코드로 전달되므로 코드페이지 문제가 아예 없다.
+            // 경로를 배치에 글자로 박으면 비한국어 윈도우나 % 가 든 경로에서 깨진다.
             StringBuilder b = new StringBuilder();
             b.AppendLine("@echo off");
             b.AppendLine("setlocal enableextensions");
-            b.AppendLine("set \"PID=" + pid + "\"");
-            b.AppendLine("set \"EXE=" + exePath + "\"");
-            b.AppendLine("set \"DIR=" + dir + "\"");
+            b.AppendLine("set \"PID=%AST_PID%\"");
+            b.AppendLine("set \"EXE=%AST_EXE%\"");
+            b.AppendLine("set \"DIR=%AST_DIR%\"");
+            b.AppendLine("set \"BAK=%AST_EXE%.bak\"");
             b.AppendLine("set \"TMPD=%TEMP%\\ast_up_%RANDOM%%RANDOM%\"");
-            // 1) 앱이 완전히 끝날 때까지 최대 30초 대기 (파일 잠금 해제 대기)
-            b.AppendLine("for /L %%i in (1,1,30) do (");
+            // 1) 앱이 완전히 끝날 때까지 최대 60초 대기.
+            //    ★ 타임아웃이면 절대 교체하지 않는다 — 살아 있는 exe 를 덮어쓰면 앱을 잃는다.
+            b.AppendLine("for /L %%i in (1,1,60) do (");
             b.AppendLine("  tasklist /FI \"PID eq %PID%\" 2>nul | find \"%PID%\" >nul || goto :gone");
             b.AppendLine("  ping -n 2 127.0.0.1 >nul");
             b.AppendLine(")");
+            b.AppendLine("goto :fail");
             b.AppendLine(":gone");
             b.AppendLine("md \"%TMPD%\" 2>nul");
             // 2) 내려받기 + 압축 풀기 (TLS 1.2 명시 — 옛 파워셸 기본값으로는 GitHub 연결 실패)
@@ -4050,13 +4075,26 @@ public static class Updater
                          "Invoke-WebRequest -Uri '" + ZipUrl + "' -OutFile (Join-Path $env:TMPD 'u.zip') -UseBasicParsing; " +
                          "Expand-Archive -LiteralPath (Join-Path $env:TMPD 'u.zip') -DestinationPath $env:TMPD -Force\" || goto :fail");
             b.AppendLine("if not exist \"%TMPD%\\AutoShutdownTimer.exe\" goto :fail");
-            // 3) 받은 파일 전부를 앱 폴더로 덮어쓴다 (한글 파일명을 배치에 적지 않으려고 통째로 순회)
+            // 3) ★ 백업 → 교체 → 검증. 한 단계라도 어긋나면 원래 exe 를 되돌린다.
+            //    제자리 덮어쓰기만 하면 복사가 중간에 끊겼을 때 되돌릴 방법이 없다.
+            b.AppendLine("copy /Y \"%EXE%\" \"%BAK%\" >nul");
+            b.AppendLine("if errorlevel 1 goto :fail");
+            b.AppendLine("copy /Y \"%TMPD%\\AutoShutdownTimer.exe\" \"%EXE%\" >nul");
+            b.AppendLine("if errorlevel 1 goto :rollback");
+            b.AppendLine("if not exist \"%EXE%\" goto :rollback");
+            b.AppendLine("for %%z in (\"%EXE%\") do if %%~zz LSS 500000 goto :rollback");
+            // 부속 파일(설명서·보안패치)은 실패해도 앱 실행에 지장이 없으므로 결과를 따지지 않는다
             b.AppendLine("for %%f in (\"%TMPD%\\*\") do (");
-            b.AppendLine("  if /I not \"%%~nxf\"==\"u.zip\" copy /Y \"%%f\" \"%DIR%\\\" >nul");
+            b.AppendLine("  if /I not \"%%~nxf\"==\"u.zip\" if /I not \"%%~nxf\"==\"AutoShutdownTimer.exe\" copy /Y \"%%f\" \"%DIR%\\\" >nul");
             b.AppendLine(")");
+            b.AppendLine("del \"%BAK%\" 2>nul");
             b.AppendLine("start \"\" \"%EXE%\"");
             b.AppendLine("goto :done");
-            // 4) 실패해도 원래 앱은 되살린다. 그리고 사이트를 열어 직접 받게 안내.
+            // 4) 교체가 깨졌으면 백업으로 되돌린다 — 사용자가 앱을 잃으면 안 된다.
+            b.AppendLine(":rollback");
+            b.AppendLine("copy /Y \"%BAK%\" \"%EXE%\" >nul");
+            b.AppendLine("del \"%BAK%\" 2>nul");
+            // 5) 실패해도 원래 앱은 되살리고, 사이트를 열어 직접 받게 안내한다.
             b.AppendLine(":fail");
             b.AppendLine("start \"\" \"%EXE%\"");
             b.AppendLine("start \"\" \"" + SiteUrl + "\"");
@@ -4064,20 +4102,45 @@ public static class Updater
             b.AppendLine("rd /S /Q \"%TMPD%\" 2>nul");
             b.AppendLine("(goto) 2>nul & del \"%~f0\"");
 
-            // 경로에 한글이 섞일 수 있다(C:\Users\사용자\...). 배치는 시스템 ANSI 코드페이지로 써야
-            // cmd 가 같은 글자로 읽는다. ASCII 로 쓰면 한글 경로에서 파일을 못 찾는다.
-            File.WriteAllText(bat, b.ToString(), Encoding.Default);
+            File.WriteAllText(bat, b.ToString(), Encoding.ASCII);
 
-            ProcessStartInfo psi = new ProcessStartInfo(bat);
+            psi = new ProcessStartInfo(bat);
             psi.WindowStyle = ProcessWindowStyle.Hidden;
             psi.CreateNoWindow = true;
             psi.UseShellExecute = false;
             psi.WorkingDirectory = Path.GetTempPath();
-            Process.Start(psi);
+            psi.EnvironmentVariables["AST_EXE"] = exePath;
+            psi.EnvironmentVariables["AST_DIR"] = dir;
+            psi.EnvironmentVariables["AST_PID"] = pid.ToString();
         }
         catch { return false; }
 
-        try { Application.Exit(); } catch { }
+        // ★ 배치는 앱이 **실제로 닫힌 뒤에만** 띄운다.
+        //   먼저 띄워두고 Application.Exit() 을 부르면, 종료가 취소됐을 때
+        //   배치만 홀로 돌다가 살아 있는 exe 를 덮어쓰려다 실패한다.
+        bool started = false;
+        FormClosedEventHandler onClosed = delegate
+        {
+            try { Process.Start(psi); started = true; } catch { }
+        };
+        try
+        {
+            Updating = true;
+            if (owner != null) owner.FormClosed += onClosed;
+            Application.Exit();
+        }
+        catch { }
+        finally
+        {
+            try { if (owner != null) owner.FormClosed -= onClosed; } catch { }
+            Updating = false;
+        }
+
+        if (!started)
+        {
+            try { File.Delete(bat); } catch { }
+            return false;
+        }
         return true;
     }
 }
