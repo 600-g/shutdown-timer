@@ -10,6 +10,12 @@ rem  (번호가 이미 릴리스된 것이면 push 전에 멈추고 알려준다)
 where git >nul 2>nul || (echo [오류] git 이 설치돼 있지 않습니다. https://git-scm.com 에서 설치 후 다시 실행 & pause & exit /b 1)
 if not exist ".git" (echo [오류] 이 폴더는 git 저장소가 아닙니다. README.md 의 "최초 업로드" 를 먼저 진행하세요. & pause & exit /b 1)
 
+rem 다른 기기(claude.ai · 맥)에서 먼저 올린 게 있을 수 있다. 항상 원격을 먼저 당겨온다.
+rem --autostash 는 아직 커밋 안 한 내 수정을 잠깐 치워뒀다가 되돌려 놓는다.
+echo  원격 내용 확인 중...
+git pull --rebase --autostash || (echo. & echo [중지] 원격과 내용이 충돌합니다. & echo        같은 파일을 다른 기기에서도 고친 상태입니다. 충돌을 먼저 정리하세요. & pause & exit /b 1)
+echo.
+
 set VERLINE=
 for /f "tokens=2 delims==" %%a in ('findstr /c:"VERSION = " src\PhoneShell.cs') do set VERLINE=%%a
 for /f "tokens=1 delims=;" %%b in ("%VERLINE%") do set VER=%%~b
