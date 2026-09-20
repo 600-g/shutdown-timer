@@ -115,6 +115,32 @@ psi.UseShellExecute = false;   // 환경 변수를 넘기려면 반드시 false
 업데이트 확인 타이머는 **`Shown` 이 아니라 생성자**에 있다. `--tray` 자동 실행은 `Shown` 이 오지 않아
 트레이 상주 사용자가 영영 새 버전을 못 받게 된다. 첫 확인 6초 뒤, 이후 6시간마다.
 
+## 안내 창은 앱 시트로 (1.0.2~)
+
+윈도우 기본 `MessageBox` 는 이 앱의 아이폰풍 UI 에서 확 튄다. 그래서 **안내성 창은 `AppSheet` 로 띄운다**
+(파일 끝 `SheetBody` + `AppSheet`, 약 600줄). `OpenNoteEditor`·`FireAlarm` 의 관습을 일반화한 것이다.
+
+```csharp
+AppSheet s = new AppSheet("제목", "v1.0.2", "부제");
+s.SetStatus("상태 한 줄", Theme.Ok);
+s.Body.AddHead("변경 내역");
+AppSheet.AddMarkdown(s.Body, notes);          // 릴리스 본문(=CHANGELOG 절)을 블록으로
+s.Body.AddLink("릴리스 페이지 열기", delegate { AppSheet.OpenUrl(RelUrl); });
+s.Tell(owner, "닫기");                         // 또는 s.Ask(owner, "지금 업데이트", "나중에") → bool
+```
+
+지킬 것:
+- **색 리터럴 금지.** 전부 `Theme.*`. 별도 Form 이라 `RemapTree` 가 안 닿으므로 리터럴을 박으면 다크 모드에서 그대로 남는다.
+- **폰트는 생성자에서 만들어 필드로 들고 Dispose.** `Fonts.Regular/Semi` 는 호출마다 `new Font` 이고 아무도 Dispose 하지 않아, Paint 안에서 부르면 GDI 핸들이 쌓인다. `Fonts.SemiPx` 는 캐시라 반대로 Dispose 금지.
+- **람다 금지.** 이 파일은 `=>` 가 0건이다. 전부 `delegate { }`.
+- **모달 유지.** 비모달로 바꾸면 `Updater.busy` 가 먼저 풀려 6시간 자동 확인이 시트를 겹쳐 쌓고, 예약 경고의 개시-시점 평가 보장도 깨진다.
+- 스크롤은 휠·드래그·키 3중화. 휠은 포커스가 없으면 안 오므로 드래그가 실질 보장선이다.
+
+**그대로 둬야 하는 MessageBox**: 종료 확인(`DialogResult` 가 `e.Cancel` 을 정한다) · `ReportCrash`(폼·테마가 없을 때도 불린다) · "이미 실행 중"(`Application.Run` 전) · 진단 실패 폴백(시트 자체가 죽었을 때).
+
+진단 창은 **클립보드로 나가는 원문을 바꾸지 않고** 화면만 시트로 바꿨다(`FillDiagBody` 가 원문을 블록으로 옮긴다).
+지원 요청에 붙여넣는 텍스트라 형식을 건드리면 안 된다.
+
 ## 릴리스 전 검증 (워크플로가 자동으로)
 
 빌드 직후 `산출물 검증` 스텝이 돌고, 하나라도 걸리면 **릴리스되지 않는다**:
