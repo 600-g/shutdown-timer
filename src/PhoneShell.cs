@@ -758,6 +758,8 @@ public class MainForm : Form
     private Label lblCountdown, lblStatus, lblEta; private Timer etaTimer; private bool presetCentered = false;
     // 설정 맨 아래 버전 줄 — 새 버전이 있으면 여기에 배지를 단다
     private Label lblVerSet;
+    private string pendingTag = null;
+    private bool verChecking = false;
 
     private Panel panelFail;                     // 실패 시에만 노출
     private Label lblFail;
@@ -1134,19 +1136,18 @@ public class MainForm : Form
         // 3) 정보
         Label sg4 = new Label(); sg4.Text = "정보"; sg4.Font = Fonts.Semi(9.5F); sg4.ForeColor = MUTED;
         sg4.Location = new Point(2, 310); sg4.AutoSize = true; sg4.BackColor = BG; panelSet.Controls.Add(sg4);
-        lblVerSet = new Label(); lblVerSet.Text = "자동 종료 타이머 v" + VERSION;
+        lblVerSet = new Label();
+        lblVerSet.Text = "자동 종료 타이머 v" + VERSION;
         lblVerSet.Font = Fonts.Regular(8.5F); lblVerSet.ForeColor = MUTED;
         lblVerSet.Location = new Point(2, 328); lblVerSet.AutoSize = true; lblVerSet.BackColor = BG; panelSet.Controls.Add(lblVerSet);
         // 버전 줄을 누르면 수동으로 업데이트 확인 (새 버튼을 놓을 자리가 없어 라벨 자체를 버튼처럼 쓴다)
         lblVerSet.Cursor = Cursors.Hand;
+        // 예약 중이라는 경고는 새 버전이 실제로 있을 때만, 업데이트 화면 안에서 보여준다.
+        // (여기서 먼저 물으면 최신 여부만 확인하려는 사람도 경고를 받는다)
         lblVerSet.Click += delegate
         {
-            // 업데이트하면 앱이 닫히므로 진행 중인 전원 끄기 예약은 사라진다.
-            // 종료 확인 모달은 업데이트 경로에서 건너뛰므로, 여기서 미리 알려준다.
-            if (powerRunning && MessageBox.Show(
-                    "전원 끄기 예약이 진행 중입니다.\r\n업데이트하면 이 예약은 취소됩니다.\r\n\r\n계속할까요?",
-                    "확인", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
-                return;
+            verChecking = true;
+            RefreshVerLabel();
             Updater.Check(this, VERSION, false, ShowUpdateBadge);
         };
         tip.SetToolTip(lblVerSet, "클릭하면 새 버전이 있는지 확인합니다");
@@ -1243,6 +1244,10 @@ public class MainForm : Form
         // --tray 로 자동 실행되면 Shown 이 아예 발생하지 않아(SetVisibleCore 가 막는다),
         // 트레이 상주로만 쓰는 사용자는 새 버전을 영영 못 받게 된다.
         // 첫 확인은 6초 뒤(백신 행위감시가 예민한 구간을 피한다), 이후 6시간마다.
+        // Updater 는 MainForm 밖의 static 클래스라 private 필드를 못 본다. 훅으로 넘겨준다.
+        Updater.Done = delegate { verChecking = false; RefreshVerLabel(); };
+        Updater.PowerBusy = delegate { return powerRunning; };
+
         try
         {
             Timer upChk = new Timer();
@@ -3602,17 +3607,48 @@ public class MainForm : Form
 
     // 새 버전을 찾았을 때 — 팝업으로 막아서지 않고 버전 줄에 표시만 남긴다.
     // 사용자가 알아서 누르면 되고, 하루 한 번만 트레이 풍선으로 가볍게 귀띔한다.
+    // 설정 맨 아래 버전 줄을 현재 상태에 맞게 다시 그린다. 상태는 셋뿐이다.
+    //
+    // ★ "자동 종료 타이머 v" + VERSION 이라는 연결식을 바꾸지 말 것.
+    //   VERSION 이 const 라 컴파일 때 한 덩어리 리터럴로 접히고,
+    //   릴리스 검증이 exe 안에서 바로 그 문자열을 찾아 버전 일치를 확인한다.
+    //   string.Format 이나 문자열 분해로 바꾸면 컴파일은 되고 배포만 조용히 막힌다.
+    private void RefreshVerLabel()
+    {
+        try
+        {
+            if (lblVerSet == null || lblVerSet.IsDisposed) return;
+            string baseText = "자동 종료 타이머 v" + VERSION;
+            if (pendingTag != null)
+            {
+                lblVerSet.Text = baseText + "   ·   새 버전 " + pendingTag + " 있음 ▸";
+                lblVerSet.ForeColor = ACCENT;
+                lblVerSet.Font = Fonts.Semi(8.5F);
+                tip.SetToolTip(lblVerSet, "클릭하면 " + pendingTag + " 로 업데이트합니다");
+                return;
+            }
+            if (verChecking)
+            {
+                lblVerSet.Text = baseText + "   ·   확인 중…";
+                lblVerSet.ForeColor = MUTED;
+                lblVerSet.Font = Fonts.Regular(8.5F);
+                tip.SetToolTip(lblVerSet, "새 버전이 있는지 확인하고 있습니다");
+                return;
+            }
+            lblVerSet.Text = baseText;
+            lblVerSet.ForeColor = MUTED;
+            lblVerSet.Font = Fonts.Regular(8.5F);
+            tip.SetToolTip(lblVerSet, "클릭하면 새 버전이 있는지 확인합니다");
+        }
+        catch { }
+    }
+
     private void ShowUpdateBadge(string tag)
     {
         try
         {
-            if (lblVerSet != null && !lblVerSet.IsDisposed)
-            {
-                lblVerSet.Text = "자동 종료 타이머 v" + VERSION + "   ·   새 버전 " + tag + " 있음 ▸";
-                lblVerSet.ForeColor = ACCENT;
-                lblVerSet.Font = Fonts.Semi(8.5F);
-                tip.SetToolTip(lblVerSet, "클릭하면 " + tag + " 로 업데이트합니다");
-            }
+            pendingTag = tag;
+            RefreshVerLabel();
         }
         catch { }
 
@@ -3846,6 +3882,7 @@ public static class Updater
     const string ApiUrl  = "https://api.github.com/repos/600-g/shutdown-timer/releases/latest";
     const string ZipUrl  = "https://github.com/600-g/shutdown-timer/releases/latest/download/AutoShutdownTimer.zip";
     const string SiteUrl = "https://600g.net";
+    const string RelUrl  = "https://github.com/600-g/shutdown-timer/releases";
     const string Title   = "자동 종료 타이머";
 
     static bool busy = false;
@@ -3853,6 +3890,13 @@ public static class Updater
     /// 업데이트 때문에 종료하는 중. MainForm 의 종료 확인 모달을 건너뛰게 한다.
     /// 그 모달이 종료를 붙잡으면 교체 배치가 먼저 진행해버려 앱을 잃는다.
     public static bool Updating = false;
+
+    /// 확인이 끝났다(성공·실패 무관). MainForm 이 버전 줄의 "확인 중…" 을 푼다.
+    public static Action Done;
+
+    /// 전원 끄기 예약이 진행 중인가. MainForm 의 private 필드를 대신 읽어온다.
+    /// 이름을 Busy 로 하면 위의 busy 플래그와 헷갈린다.
+    public static Func<bool> PowerBusy;
 
     /// "1.0.0" · "v1.2.3" 에서 비교 가능한 숫자를 만든다. 실패하면 -1.
     ///
@@ -3984,20 +4028,17 @@ public static class Updater
 
     static void Decide(Form owner, string tag, string notes, long cur, long latest, bool silent, Action<string> onNewer)
     {
+        // 네트워크 단계가 끝났다. 버전 줄의 "확인 중…" 을 먼저 풀어준다.
+        if (Done != null) { try { Done(); } catch { } }
+
         if (cur < 0 || latest < 0)
         {
-            if (!silent)
-                MessageBox.Show(owner,
-                    "업데이트 서버에 연결하지 못했습니다.\r\n인터넷 연결을 확인한 뒤 다시 눌러주세요.",
-                    Title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            if (!silent) Sheet(owner, 0, tag, notes, cur);
             return;
         }
         if (latest <= cur)
         {
-            if (!silent)
-                MessageBox.Show(owner,
-                    "최신 버전을 쓰고 있습니다.",
-                    Title, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            if (!silent) Sheet(owner, 1, tag, notes, cur);
             return;
         }
 
@@ -4007,41 +4048,72 @@ public static class Updater
         // 시작 시 자동 확인이면 여기서 끝. 하던 일을 막지 않는다.
         if (silent) return;
 
-        DialogResult r = MessageBox.Show(owner,
-            "새 버전 " + tag + " 이(가) 나왔습니다.\r\n" +
-            Trim(notes) +
-            "\r\n지금 업데이트할까요?\r\n" +
-            "앱이 잠깐 닫혔다가 새 버전으로 다시 열립니다.\r\n" +
-            "예약해 둔 타이머가 있으면 먼저 끝내고 하세요.",
-            Title, MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-        if (r != DialogResult.Yes) return;
-
-        if (!Install(owner))
-            MessageBox.Show(owner,
-                "업데이트를 시작하지 못했습니다.\r\n600g.net 에서 직접 받아주세요.",
-                Title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        Sheet(owner, 2, tag, notes, cur);
     }
 
-    /// 릴리스 변경 내역을 대화상자에 넣기 좋게 다듬는다. 없으면 빈 문자열.
-    /// 마크다운 제목(#)과 빈 줄을 걷어내고 12줄까지만 보여준다.
-    static string Trim(string notes)
+    /// 업데이트 안내 화면. 윈도우 기본 대화상자 대신 앱 디자인으로 띄운다.
+    /// state 0 연결실패 · 1 최신 · 2 새 버전 · 3 설치 시작 실패
+    static void Sheet(Form owner, int state, string tag, string notes, long cur)
     {
-        if (string.IsNullOrEmpty(notes)) return "\r\n";
         try
         {
-            List<string> keep = new List<string>();
-            foreach (string raw in notes.Replace("\r", "").Split('\n'))
+            string myVer = VerText(cur);
+            if (state == 0)
             {
-                string ln = raw.Trim();
-                if (ln.Length == 0 || ln.StartsWith("#")) continue;
-                if (ln.Length > 70) ln = ln.Substring(0, 68) + "…";
-                keep.Add("    " + ln);
-                if (keep.Count >= 12) { keep.Add("    …"); break; }
+                AppSheet s = new AppSheet("업데이트 확인", myVer, null);
+                s.SetStatus("서버에 닿지 못했습니다", Theme.Muted);
+                s.Body.AddText("인터넷 연결을 확인한 뒤 버전 줄을 다시 눌러주세요.");
+                s.Body.AddGap(6);
+                s.Body.AddLink("릴리스 페이지에서 직접 받기", delegate { AppSheet.OpenUrl(RelUrl + "/latest"); });
+                s.Tell(owner, "닫기");
+                return;
             }
-            if (keep.Count == 0) return "\r\n";
-            return "\r\n" + string.Join("\r\n", keep.ToArray()) + "\r\n";
+            if (state == 1)
+            {
+                AppSheet s = new AppSheet("최신 버전입니다", myVer, null);
+                s.SetStatus("업데이트할 것이 없습니다", Theme.Ok);
+                s.Body.AddHead("이번 버전 내역");
+                AppSheet.AddMarkdown(s.Body, notes);
+                s.Body.AddGap(6);
+                s.Body.AddLink("릴리스 페이지 열기", delegate { AppSheet.OpenUrl(RelUrl); });
+                s.Tell(owner, "닫기");
+                return;
+            }
+            if (state == 3)
+            {
+                AppSheet s = new AppSheet("업데이트를 시작하지 못했습니다", myVer, null);
+                s.SetStatus("직접 내려받아 주세요", Theme.Danger);
+                s.Body.AddText("받은 파일의 압축을 풀어 기존 폴더에 덮어쓰면 됩니다.");
+                s.Body.AddGap(6);
+                s.Body.AddLink("600g.net 열기", delegate { AppSheet.OpenUrl(SiteUrl); });
+                s.Body.AddLink("릴리스 페이지 열기", delegate { AppSheet.OpenUrl(RelUrl + "/latest"); });
+                s.Tell(owner, "닫기");
+                return;
+            }
+
+            AppSheet up = new AppSheet("새 버전 " + tag, myVer, "지금 쓰는 버전 " + myVer);
+            up.SetStatus("업데이트할 수 있습니다", Theme.Accent);
+            up.Body.AddHead("변경 내역");
+            AppSheet.AddMarkdown(up.Body, notes);
+            up.Body.AddGap(8);
+            up.Body.AddSub("앱이 잠깐 닫혔다가 새 버전으로 다시 열립니다.");
+            bool busyPower = false;
+            if (PowerBusy != null) { try { busyPower = PowerBusy(); } catch { } }
+            if (busyPower) up.Body.AddWarn("전원 끄기 예약이 진행 중입니다. 업데이트하면 취소됩니다.");
+            up.Body.AddGap(4);
+            up.Body.AddLink("릴리스 페이지 열기", delegate { AppSheet.OpenUrl(RelUrl + "/tag/" + tag); });
+
+            if (!up.Ask(owner, "지금 업데이트", "나중에")) return;
+            if (!Install(owner)) Sheet(owner, 3, tag, notes, cur);
         }
-        catch { return "\r\n"; }
+        catch { }
+    }
+
+    /// 내부 비교용 숫자를 다시 사람이 읽는 버전 문자열로.
+    static string VerText(long v)
+    {
+        if (v < 0) return "";
+        return "v" + (v / 1000000) + "." + (v / 1000 % 1000) + "." + (v % 1000);
     }
 
     /// 교체 배치를 만들고, **앱이 실제로 닫힌 뒤에만** 실행한다.
