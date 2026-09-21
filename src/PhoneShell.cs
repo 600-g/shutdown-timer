@@ -1096,7 +1096,7 @@ public class MainForm : Form
 
         chkGaming = new Toggle(); chkGaming.Text = "무음 모드"; chkGaming.Size = new Size(220, 28);
         chkGaming.Location = new Point(0, 170); panelSet.Controls.Add(chkGaming);
-        tip.SetToolTip(chkGaming, "알림 소리를 내지 않습니다. 게임·영상의 전체화면 포커스도 빼앗지 않습니다.");
+        tip.SetToolTip(chkGaming, "알림 소리를 내지 않습니다. 전체화면을 쓰는 중에도 포커스를 빼앗지 않습니다.");
 
         Label sg3 = new Label(); sg3.Text = "알림 표시 방식"; sg3.Font = Fonts.Regular(10F); sg3.ForeColor = INK;
         sg3.Location = new Point(2, 206); sg3.AutoSize = true; sg3.BackColor = BG; panelSet.Controls.Add(sg3);
@@ -1154,7 +1154,7 @@ public class MainForm : Form
             Updater.Check(this, VERSION, false, ShowUpdateBadge);
         };
         tip.SetToolTip(lblVerSet, "클릭하면 새 버전이 있는지 확인합니다");
-        tip.SetToolTip(chkGaming, "켜면 알림 소리를 내지 않고 팝업만 조용히 띄웁니다. 게임·영상의 전체화면 포커스도 빼앗지 않습니다.");
+        tip.SetToolTip(chkGaming, "켜면 알림 소리를 내지 않고 팝업만 조용히 띄웁니다. 전체화면을 쓰는 중에도 포커스를 빼앗지 않습니다.");
 
         // ── 타이머 입력 줄 (전원/프로그램 모드) ──
         lblAfterF = new Label(); lblAfterF.Text = "타이머"; lblAfterF.Font = Fonts.Semi(12F); lblAfterF.ForeColor = INK; lblAfterF.AutoSize = true; lblAfterF.BackColor = BG;
@@ -3716,7 +3716,7 @@ public class MainForm : Form
 
             g.Body.AddHead("전원 끄기");
             g.Body.AddBullet("정해둔 시간이 되면 PC가 꺼져요", 0);
-            g.Body.AddBullet("게임이 켜져 있어도 꺼지니 저장은 미리 해두세요", 0);
+            g.Body.AddBullet("쓰던 프로그램이 열려 있어도 꺼지니 저장은 미리 해두세요", 0);
 
             g.Body.AddHead("프로그램");
             g.Body.AddBullet("고른 프로그램만 닫아요. 여러 개도 돼요", 0);
@@ -3724,7 +3724,7 @@ public class MainForm : Form
 
             g.Body.AddHead("알림");
             g.Body.AddBullet("시간이 되면 알려줘요. 여러 개 저장해두고 켜고 끌 수 있어요", 0);
-            g.Body.AddBullet("게이밍 모드를 켜면 소리 없이 조용히 알려줘요", 0);
+            g.Body.AddBullet("무음 모드를 켜면 소리 없이 조용히 알려줘요", 0);
 
             g.Body.AddHead("알아두면 좋아요");
             g.Body.AddBullet("창을 닫아도 꺼지지 않고 작업표시줄 오른쪽에 숨어요", 0);
