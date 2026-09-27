@@ -178,6 +178,7 @@ public static class Theme
     public static Color CancelFill, CancelHover, CancelDown, CancelText, CancelBorder;
     public static Color HomeBar, ScreenEdge, VerText, BetaBg, IslandText, BadgeOffFill;
     public static Color GearActiveFill, GearIcon;
+    public static Color FailBg, FailBtn;
 
     static Theme() { Apply(false); }
 
@@ -207,30 +208,32 @@ public static class Theme
             VerText = Color.FromArgb(168, 174, 184); BetaBg = Color.FromArgb(230, 238, 252); IslandText = Color.FromArgb(236, 240, 248);
             BadgeOffFill = Color.FromArgb(240, 242, 246);
             GearActiveFill = Color.FromArgb(226, 233, 246); GearIcon = Color.FromArgb(126, 132, 144);
+            FailBg = Color.FromArgb(253, 240, 240); FailBtn = Color.FromArgb(250, 232, 232);
         }
         else
         {
             Bg = Color.FromArgb(26, 28, 34); Card = Color.FromArgb(40, 43, 52);
             Ink = Color.FromArgb(236, 238, 243); Muted = Color.FromArgb(150, 156, 168);
-            Accent = Color.FromArgb(82, 142, 240); Danger = Color.FromArgb(232, 92, 92); Ok = Color.FromArgb(62, 190, 112);
+            Accent = Color.FromArgb(82, 142, 240); Danger = Color.FromArgb(240, 110, 110); Ok = Color.FromArgb(62, 190, 112);
             Bezel = Color.FromArgb(6, 6, 8); Island = Color.Black;
             Border = Color.FromArgb(78, 83, 96); PillBorder = Color.FromArgb(80, 85, 98);
             GhostFill = Color.FromArgb(46, 50, 60); GhostHover = Color.FromArgb(56, 61, 72); GhostDown = Color.FromArgb(68, 73, 86);
             GhostText = Color.FromArgb(222, 226, 234); GhostBorder = Color.FromArgb(82, 87, 100);
             SegFill = Color.FromArgb(44, 48, 58); SegHover = Color.FromArgb(54, 58, 70); SegDown = Color.FromArgb(64, 69, 82); SegText = Color.FromArgb(176, 182, 194);
-            DisFill = Color.FromArgb(40, 43, 52); DisBorder = Color.FromArgb(60, 64, 76); DisText = Color.FromArgb(118, 124, 136);
+            DisFill = Color.FromArgb(40, 43, 52); DisBorder = Color.FromArgb(60, 64, 76); DisText = Color.FromArgb(146, 152, 164);
             WinHover = Color.FromArgb(50, 54, 64); WinDown = Color.FromArgb(62, 66, 78); WinIcon = Color.FromArgb(160, 166, 178);
             CloseHover = Color.FromArgb(92, 48, 52); CloseDown = Color.FromArgb(120, 56, 60);
             RowSel = Color.FromArgb(52, 64, 92); RowSelSoft = Color.FromArgb(48, 58, 82);
-            OffText = Color.FromArgb(112, 118, 130); OffSub = Color.FromArgb(98, 104, 116); Hint = Color.FromArgb(118, 124, 138);
+            OffText = Color.FromArgb(156, 162, 174); OffSub = Color.FromArgb(138, 144, 156); Hint = Color.FromArgb(146, 152, 166);
             Chevron = Color.FromArgb(150, 156, 170); ToggleOff = Color.FromArgb(90, 96, 110); Knob = Color.White;
             ToggleLabel = Color.FromArgb(214, 218, 226); ToggleDisabled = Color.FromArgb(58, 62, 74);
             CancelFill = Color.FromArgb(48, 52, 62); CancelHover = Color.FromArgb(58, 62, 74); CancelDown = Color.FromArgb(70, 75, 88);
             CancelText = Color.FromArgb(214, 218, 226); CancelBorder = Color.FromArgb(66, 70, 82);
             HomeBar = Color.FromArgb(150, 155, 166); ScreenEdge = Color.FromArgb(120, 60, 64, 76);
-            VerText = Color.FromArgb(120, 126, 140); BetaBg = Color.FromArgb(40, 58, 92); IslandText = Color.FromArgb(236, 240, 248);
+            VerText = Color.FromArgb(144, 150, 164); BetaBg = Color.FromArgb(40, 58, 92); IslandText = Color.FromArgb(236, 240, 248);
             BadgeOffFill = Color.FromArgb(52, 56, 66);
             GearActiveFill = Color.FromArgb(44, 58, 86); GearIcon = Color.FromArgb(150, 156, 170);
+            FailBg = Color.FromArgb(70, 38, 42); FailBtn = Color.FromArgb(92, 48, 54);
         }
     }
 
@@ -966,7 +969,7 @@ public class MainForm : Form
         btnRemove = MakeGhost("삭제", CW - 80, 76, 80, 28); btnRemove.Click += RemoveClick; panelApp.Controls.Add(btnRemove);
         tip.SetToolTip(btnRemove, "선택한 항목 삭제 (Delete)");
         btnTest = MakeGhost("지금 종료", CW - 80, 108, 80, 28); btnTest.Click += TestClick; panelApp.Controls.Add(btnTest);
-        btnTest.TextColor = Color.FromArgb(206, 62, 62);
+        btnTest.TextColor = DANGER;
         tip.SetToolTip(btnTest, "타이머 없이 목록의 프로그램을 바로 종료");
 
         // 행4: 순차 종료 + 간격
@@ -1138,11 +1141,16 @@ public class MainForm : Form
 
         // 3) 정보
         Label sg4 = new Label(); sg4.Text = "정보"; sg4.Font = Fonts.Semi(9.5F); sg4.ForeColor = MUTED;
-        sg4.Location = new Point(2, 310); sg4.AutoSize = true; sg4.BackColor = BG; panelSet.Controls.Add(sg4);
+        sg4.Location = new Point(2, 316); sg4.AutoSize = true; sg4.BackColor = BG; panelSet.Controls.Add(sg4);
         lblVerSet = new Label();
         lblVerSet.Text = "자동 종료 타이머 v" + VERSION;
         lblVerSet.Font = Fonts.Regular(8.5F); lblVerSet.ForeColor = MUTED;
-        lblVerSet.Location = new Point(2, 328); lblVerSet.AutoSize = true; lblVerSet.BackColor = BG; panelSet.Controls.Add(lblVerSet);
+        lblVerSet.Location = new Point(2, 374); lblVerSet.AutoSize = true; lblVerSet.BackColor = BG; panelSet.Controls.Add(lblVerSet);
+        // 정보와 버전 사이: 사용 가이드 (헤더 시계 아이콘과 같은 시트)
+        AppButton btnGuide = MakeGhost("사용 가이드", 0, 336, 112, 28);
+        btnGuide.Click += delegate { ShowGuide(); };
+        tip.SetToolTip(btnGuide, "간단한 사용 방법 보기");
+        panelSet.Controls.Add(btnGuide);
         // 버전 줄을 누르면 수동으로 업데이트 확인 (새 버튼을 놓을 자리가 없어 라벨 자체를 버튼처럼 쓴다)
         lblVerSet.Cursor = Cursors.Hand;
         // 예약 중이라는 경고는 새 버전이 실제로 있을 때만, 업데이트 화면 안에서 보여준다.
@@ -1208,10 +1216,10 @@ public class MainForm : Form
 
         // 실패 안내
         panelFail = new Panel(); panelFail.Location = new Point(M, SCRH - 250); panelFail.Size = new Size(CW, 44);
-        panelFail.BackColor = Color.FromArgb(253, 240, 240); panelFail.Visible = false; screen.Controls.Add(panelFail);
+        panelFail.BackColor = Theme.FailBg; panelFail.Visible = false; screen.Controls.Add(panelFail);
         lblFail = new Label(); lblFail.Text = "일부 종료 실패"; lblFail.ForeColor = DANGER; lblFail.Font = Fonts.Semi(9.5F); lblFail.Location = new Point(10, 14); lblFail.AutoSize = true; lblFail.BackColor = panelFail.BackColor; panelFail.Controls.Add(lblFail);
-        btnShowLog = MakeGhost("자세히", CW - 168, 9, 76, 26); btnShowLog.Fill = Color.FromArgb(250,232,232); btnShowLog.Click += ShowLogClick; panelFail.Controls.Add(btnShowLog);
-        btnSaveLog = MakeGhost("로그 저장", CW - 86, 9, 86, 26); btnSaveLog.Fill = Color.FromArgb(250,232,232); btnSaveLog.Click += SaveLogClick; panelFail.Controls.Add(btnSaveLog);
+        btnShowLog = MakeGhost("자세히", CW - 168, 9, 76, 26); btnShowLog.Fill = Theme.FailBtn; btnShowLog.Click += ShowLogClick; panelFail.Controls.Add(btnShowLog);
+        btnSaveLog = MakeGhost("로그 저장", CW - 86, 9, 86, 26); btnSaveLog.Fill = Theme.FailBtn; btnSaveLog.Click += SaveLogClick; panelFail.Controls.Add(btnSaveLog);
 
         timer = new Timer(); timer.Interval = 1000; timer.Tick += TimerTick;
         killStepTimer = new Timer(); killStepTimer.Tick += KillStep;
@@ -1932,7 +1940,7 @@ public class MainForm : Form
             return System.IO.Path.Combine(d, "settings.txt");
         }
     }
-    private const string VERSION = "1.0.0";   // 배포 버전 (semver) — 태그 v1.0.1 과 같은 값
+    private const string VERSION = "1.0.1";   // 배포 버전 (semver) — 태그 v1.0.1 과 같은 값
     private int sigClicks = 0; private DateTime sigFirst = DateTime.MinValue;
     private string loadedFrom = null;   // 진단: 설정을 어디서 불러왔는지
     private bool saveErrShown = false;
@@ -3332,7 +3340,8 @@ public class MainForm : Form
         AppButton cancel = new AppButton();
         cancel.Text = "취소"; cancel.Location = new Point(18 + (DW - 36 - 8) / 2 + 8, DH - 44);
         cancel.Size = new Size((DW - 36 - 8) / 2, 34); cancel.Radius = 9; cancel.Font = Fonts.Semi(11F);
-        cancel.Fill = Color.FromArgb(238, 240, 245); cancel.TextColor = Color.FromArgb(74, 82, 96); cancel.BorderColor = Theme.CancelBorder;
+        cancel.Fill = Theme.CancelFill; cancel.FillHover = Theme.CancelHover; cancel.FillDown = Theme.CancelDown;
+        cancel.TextColor = Theme.CancelText; cancel.BorderColor = Theme.CancelBorder;
         cancel.Click += delegate { try { dlg.Close(); } catch { } };
         dlg.Controls.Add(cancel);
 
@@ -3707,29 +3716,30 @@ public class MainForm : Form
     {
         try
         {
-            AppSheet g = new AppSheet("사용법", "v" + VERSION, null);
+            AppSheet g = new AppSheet("사용 가이드", "v" + VERSION, null);
             g.Body.AddHead("기본");
-            g.Body.AddBullet("위쪽 세 칸에서 뭘 할지 고르세요. 전원 끄기 · 프로그램 · 알림", 0);
-            g.Body.AddBullet("시간을 정하고 [시작] 을 누르면 끝이에요", 0);
-            g.Body.AddBullet("자주 쓰는 시간은 + 로 저장해두면 한 번에 고를 수 있어요", 0);
-            g.Body.AddBullet("취소하려면 [취소] 나 ESC 를 눌러주세요", 0);
+            g.Body.AddBullet("위쪽 탭에서 고르세요 · 전원 끄기 · 프로그램 · 알림", 0);
+            g.Body.AddBullet("시간을 정하고 [시작] · 멈추려면 [중지] 나 ESC", 0);
+            g.Body.AddBullet("자주 쓰는 시간은 + 로 칩에 저장 · 칩 우클릭은 삭제", 0);
 
             g.Body.AddHead("전원 끄기");
-            g.Body.AddBullet("정해둔 시간이 되면 PC가 꺼져요", 0);
-            g.Body.AddBullet("쓰던 프로그램이 열려 있어도 꺼지니 저장은 미리 해두세요", 0);
+            g.Body.AddBullet("정한 시간이 되면 PC가 꺼져요 · 저장은 미리 해두세요", 0);
 
             g.Body.AddHead("프로그램");
-            g.Body.AddBullet("고른 프로그램만 닫아요. 여러 개도 돼요", 0);
-            g.Body.AddBullet("순서대로 닫거나 한꺼번에 닫는 것 중에 고를 수 있어요", 0);
+            g.Body.AddBullet("[앱 목록] 이나 이름 입력으로 닫을 프로그램을 추가", 0);
+            g.Body.AddBullet("순차 종료를 켜면 정한 간격으로 하나씩 닫아요 · 목록 우클릭은 삭제", 0);
 
             g.Body.AddHead("알림");
-            g.Body.AddBullet("시간이 되면 알려줘요. 여러 개 저장해두고 켜고 끌 수 있어요", 0);
-            g.Body.AddBullet("무음 모드를 켜면 소리 없이 조용히 알려줘요", 0);
+            g.Body.AddBullet("[분 후] 또는 [시간] 을 고르고 내용을 적은 뒤 [추가]", 0);
+            g.Body.AddBullet("오른쪽 스위치로 켜고 끄기 · 말풍선·종 아이콘으로 표시 방식 선택", 0);
+            g.Body.AddBullet("한 번 누르면 수정 · 두 번 누르면 메모 · Del 은 삭제", 0);
+            g.Body.AddBullet("[시간] 알림은 메모 창에서 반복 요일을 골라요 · 모두 끄면 한 번만 울려요", 0);
 
             g.Body.AddHead("알아두면 좋아요");
-            g.Body.AddBullet("창을 닫아도 꺼지지 않고 작업표시줄 오른쪽에 숨어요", 0);
-            g.Body.AddBullet("완전히 끄려면 거기 아이콘에서 종료를 눌러주세요", 0);
-            g.Body.AddBullet("설정 맨 아래 버전 줄을 누르면 새 버전이 있는지 봐줘요", 0);
+            g.Body.AddBullet("창을 닫아도 트레이(작업표시줄 오른쪽)에서 계속 돌아요", 0);
+            g.Body.AddBullet("완전히 끄려면 트레이 아이콘 우클릭 → 완전 종료", 0);
+            g.Body.AddBullet("설정에서 윈도우 시작 시 자동 실행 · 다크 모드 · 무음 모드를 켤 수 있어요", 0);
+            g.Body.AddBullet("설정 맨 아래 버전 줄을 누르면 새 버전을 확인해요", 0);
             g.Tell(this, "닫기");
         }
         catch { }
