@@ -1953,7 +1953,7 @@ public class MainForm : Form
             return System.IO.Path.Combine(d, "settings.txt");
         }
     }
-    private const string VERSION = "1.0.2";   // 배포 버전 (semver) — 태그 v1.0.2 와 같은 값
+    private const string VERSION = "1.0.0";   // 배포 버전 (semver) — 태그 v1.0.0 과 같은 값
     private int sigClicks = 0; private DateTime sigFirst = DateTime.MinValue;
     private string loadedFrom = null;   // 진단: 설정을 어디서 불러왔는지
     private bool saveErrShown = false;
@@ -4511,7 +4511,7 @@ public static class Updater
         // ★ 종료가 취소됐는지는 윈도우가 돌려주는 결과로만 판단한다.
         //   예전엔 Exit 직후 owner.IsDisposed 로 짐작했는데, Exit 는 FormClosing/Closed 만 돌리고
         //   폼 해제는 메시지 루프가 끝날 때 일어날 수 있다. 그러면 정상 종료인데도 "취소"로 읽혀
-        //   취소 파일을 쓰고, 배치는 파일을 안 바꾼 채 물러나 앱만 사라졌다(1.0.2 에서 수정).
+        //   취소 파일을 쓰고, 배치는 파일을 안 바꾼 채 물러나 앱만 사라졌다.
         System.ComponentModel.CancelEventArgs exitArgs = new System.ComponentModel.CancelEventArgs();
         bool exitCalled = false;
         try { Updating = true; Application.Exit(exitArgs); exitCalled = true; }
