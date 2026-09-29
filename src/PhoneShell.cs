@@ -1272,6 +1272,19 @@ public class MainForm : Form
             upChk.Start();
         }
         catch { }
+        // 지난번 인앱 업데이트의 결과(성공/실패)를 한 번 알려준다. 창·트레이가 자리 잡은 뒤에.
+        try
+        {
+            Timer upRes = new Timer();
+            upRes.Interval = 2500;
+            upRes.Tick += delegate
+            {
+                upRes.Stop(); upRes.Dispose();
+                try { Updater.ShowLastResult(this, VERSION, TrayNotify); } catch { }
+            };
+            upRes.Start();
+        }
+        catch { }
         if (loadedFrom != null)
         {
             // 하단에 "설정 불러옴 · 레지스트리 · 알림 N개" 같은 안내는 표시하지 않는다.
@@ -1940,7 +1953,7 @@ public class MainForm : Form
             return System.IO.Path.Combine(d, "settings.txt");
         }
     }
-    private const string VERSION = "1.0.1";   // 배포 버전 (semver) — 태그 v1.0.1 과 같은 값
+    private const string VERSION = "1.0.2";   // 배포 버전 (semver) — 태그 v1.0.2 와 같은 값
     private int sigClicks = 0; private DateTime sigFirst = DateTime.MinValue;
     private string loadedFrom = null;   // 진단: 설정을 어디서 불러왔는지
     private bool saveErrShown = false;
@@ -4233,9 +4246,10 @@ public static class Updater
             }
             if (state == 3)
             {
-                AppSheet s = new AppSheet("지금은 받을 수 없어요", myVer, null);
-                s.SetStatus("잠시 뒤에 다시 해주세요", Theme.Danger);
-                s.Body.AddText("계속 안 되면 600g.net 에서 직접 받으실 수 있어요.");
+                AppSheet s = new AppSheet("업데이트를 시작하지 못했어요", myVer, null);
+                s.SetStatus("지금 버전은 그대로예요", Theme.Danger);
+                s.Body.AddText("잠시 뒤 버전 줄을 다시 눌러보세요.");
+                s.Body.AddSub("계속 안 되면 600g.net 에서 직접 받으실 수 있어요.");
                 s.Tell(owner, "닫기");
                 return;
             }
@@ -4245,13 +4259,101 @@ public static class Updater
             up.Body.AddHead("새 버전에 담긴 것");
             AppSheet.AddMarkdown(up.Body, notes);
             up.Body.AddGap(8);
-            up.Body.AddSub("앱이 잠깐 닫혔다가 다시 열려요.");
+            up.Body.AddSub("[지금 받기] 를 누르면 앱이 닫히고, 새 버전으로 바꾼 뒤 저절로 다시 열려요.");
+            up.Body.AddSub("보통 30초 안쪽이에요. 그동안 앱을 다시 켜지 말고 기다려 주세요.");
+            up.Body.AddSub("끝나면 결과를 알려드려요.");
             bool busyPower = false;
             if (PowerBusy != null) { try { busyPower = PowerBusy(); } catch { } }
             if (busyPower) up.Body.AddWarn("전원 끄기 예약이 걸려 있어요. 지금 받으면 예약은 취소돼요.");
 
             if (!up.Ask(owner, "지금 받기", "나중에")) return;
-            if (!Install(owner)) Sheet(owner, 3, tag, notes, cur);
+            if (!Install(owner, VerText(cur), tag)) Sheet(owner, 3, tag, notes, cur);
+        }
+        catch { }
+    }
+
+    /// 교체 배치가 결과를 적는 파일. 설정과 같은 %APPDATA%\ShutdownTimer 에 둔다.
+    static string ResultPath
+    {
+        get
+        {
+            try
+            {
+                string d = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ShutdownTimer");
+                if (!Directory.Exists(d)) Directory.CreateDirectory(d);
+                return Path.Combine(d, "update_result.txt");
+            }
+            catch { return ""; }
+        }
+    }
+
+    /// 배치에 넘기는 버전 문자열은 숫자·점·v 만 남긴다 (echo 가 & | > 로 깨지지 않게).
+    static string SafeVer(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return "-";
+        StringBuilder sb = new StringBuilder();
+        foreach (char c in s)
+            if ((c >= '0' && c <= '9') || c == '.' || c == 'v' || c == 'V') sb.Append(c);
+        return sb.Length == 0 ? "-" : sb.ToString();
+    }
+
+    /// 지난번 업데이트 결과를 한 번만 알려준다(읽으면 지운다).
+    /// 성공은 트레이 알림으로 조용히, 실패는 이유를 알아야 하니 창이 보이면 시트로.
+    public static void ShowLastResult(Form owner, string currentVersion, Func<string, string, bool> trayNotify)
+    {
+        try
+        {
+            string path = ResultPath;
+            if (string.IsNullOrEmpty(path) || !File.Exists(path)) return;
+            string raw = null;
+            try { raw = File.ReadAllText(path).Trim(); } catch { }
+            try { File.Delete(path); } catch { }
+            if (string.IsNullOrEmpty(raw)) return;
+
+            string[] a = raw.Split(new char[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            string res  = a.Length > 0 ? a[0].ToUpperInvariant() : "";
+            string from = a.Length > 1 ? a[1] : "";
+            long cur = ParseVer(currentVersion), prev = ParseVer(from);
+            // 배치가 OK 라고 해도 번호가 실제로 올라가야 성공이다.
+            bool ok = res == "OK" && (prev < 0 || cur > prev);
+            string curText = "v" + currentVersion;
+
+            if (ok)
+            {
+                string msg = (prev >= 0 ? VerText(prev) + " → " : "") + curText + " 로 업데이트했어요";
+                bool told = false;
+                if (trayNotify != null) { try { told = trayNotify(Title, msg); } catch { } }
+                if (!told && owner != null && owner.Visible)
+                {
+                    AppSheet s = new AppSheet("업데이트했어요", curText, null);
+                    s.SetStatus(msg, Theme.Ok);
+                    s.Tell(owner, "확인");
+                }
+                return;
+            }
+
+            string why;
+            if (res == "TIMEOUT") why = "앱이 제때 닫히지 않아 교체를 멈췄어요.";
+            else if (res == "DOWNLOAD") why = "새 버전을 내려받지 못했어요. 인터넷 연결을 확인해 주세요.";
+            else if (res == "BACKUP") why = "기존 파일을 백업하지 못해 교체를 멈췄어요.";
+            else if (res == "ROLLBACK") why = "파일을 바꾸다 문제가 생겨 원래 버전으로 되돌렸어요.";
+            else if (res == "LOST") why = "교체와 복원이 모두 실패했어요. 앱 폴더의 UPDATE-FAILED.txt 를 확인해 주세요.";
+            else if (res == "OK") why = "파일은 받았지만 버전이 그대로예요.";
+            else why = "알 수 없는 이유로 끝나지 않았어요.";
+
+            if (owner != null && owner.Visible)
+            {
+                AppSheet f = new AppSheet("업데이트하지 못했어요", curText, null);
+                f.SetStatus("지금 버전은 그대로 쓸 수 있어요", Theme.Danger);
+                f.Body.AddText(why);
+                f.Body.AddGap(6);
+                f.Body.AddSub("설정 맨 아래 버전 줄을 눌러 다시 해보세요. 계속 안 되면 600g.net 에서 직접 받으실 수 있어요.");
+                f.Tell(owner, "닫기");
+            }
+            else if (trayNotify != null)
+            {
+                try { trayNotify(Title + " · 업데이트 실패", why); } catch { }
+            }
         }
         catch { }
     }
@@ -4263,9 +4365,10 @@ public static class Updater
         return "v" + (v / 1000000) + "." + (v / 1000 % 1000) + "." + (v % 1000);
     }
 
-    /// 교체 배치를 만들고, **앱이 실제로 닫힌 뒤에만** 실행한다.
-    /// 종료가 취소되면 만든 배치를 지우고 false 를 돌려준다.
-    static bool Install(Form owner)
+    /// 교체 배치를 먼저 띄우고 앱을 종료한다. 배치는 앱이 실제로 닫힌 뒤에만 교체한다.
+    /// 종료가 취소되면 배치에 취소 파일로 알리고 false 를 돌려준다.
+    /// fromVer·toTag 는 결과 기록용이다 — 다음 실행 때 ShowLastResult 가 읽어 알려준다.
+    static bool Install(Form owner, string fromVer, string toTag)
     {
         string bat = null, cancel = null;
         ProcessStartInfo psi = null;
@@ -4289,6 +4392,9 @@ public static class Updater
             b.AppendLine("set \"DIR=%AST_DIR%\"");
             b.AppendLine("set \"CANCEL=%AST_CANCEL%\"");
             b.AppendLine("set \"BAK=%AST_EXE%.bak\"");
+            // 결과 기록: 다음 실행 때 앱이 읽고 성공/실패를 알려준다. 형식 "<결과> <이전> <목표>"
+            b.AppendLine("set \"LOG=%AST_LOG%\"");
+            b.AppendLine("set \"RES=OK\"");
             b.AppendLine("set \"TMPD=%TEMP%\\ast_up_%RANDOM%%RANDOM%\"");
             // 1) 앱이 완전히 끝날 때까지 최대 60초 대기.
             //    ★ 타임아웃이면 절대 교체하지 않는다 — 살아 있는 exe 를 덮어쓰면 앱을 잃는다.
@@ -4298,6 +4404,7 @@ public static class Updater
             b.AppendLine("  tasklist /FI \"PID eq %PID%\" 2>nul | find \"%PID%\" >nul || goto :gone");
             b.AppendLine("  ping -n 2 127.0.0.1 >nul");
             b.AppendLine(")");
+            b.AppendLine("set \"RES=TIMEOUT\"");
             b.AppendLine("goto :fail");
             b.AppendLine(":gone");
             b.AppendLine("if exist \"%CANCEL%\" goto :quit");
@@ -4307,8 +4414,8 @@ public static class Updater
                          "\"[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; " +
                          "Invoke-WebRequest -Uri '" + ZipUrl + "' -OutFile (Join-Path $env:TMPD 'u.zip') -UseBasicParsing; " +
                          "Expand-Archive -LiteralPath (Join-Path $env:TMPD 'u.zip') -DestinationPath $env:TMPD -Force; " +
-                         "Get-ChildItem -LiteralPath $env:TMPD -Recurse -File | Unblock-File\" || goto :fail");
-            b.AppendLine("if not exist \"%TMPD%\\AutoShutdownTimer.exe\" goto :fail");
+                         "Get-ChildItem -LiteralPath $env:TMPD -Recurse -File | Unblock-File\" || goto :f_dl");
+            b.AppendLine("if not exist \"%TMPD%\\AutoShutdownTimer.exe\" goto :f_dl");
             // ★ 인터넷에서 받은 파일에는 차단 표시가 붙는다. 압축을 풀면 그 표시가 exe 로 옮겨가고
             //   윈도우가 실행을 막는다(보안패치.bat 이 하는 일과 같다). 위 Unblock-File 이 1차,
             //   아래 삭제가 2차 방어다. 이걸 빼면 업데이트 후 앱이 다시 켜지지 않는다.
@@ -4316,7 +4423,7 @@ public static class Updater
             // 3) ★ 백업 → 교체 → 검증. 한 단계라도 어긋나면 원래 exe 를 되돌린다.
             //    제자리 덮어쓰기만 하면 복사가 중간에 끊겼을 때 되돌릴 방법이 없다.
             b.AppendLine("copy /Y \"%EXE%\" \"%BAK%\" >nul");
-            b.AppendLine("if errorlevel 1 goto :fail");
+            b.AppendLine("if errorlevel 1 goto :f_bak");
             b.AppendLine("copy /Y \"%TMPD%\\AutoShutdownTimer.exe\" \"%EXE%\" >nul");
             b.AppendLine("if errorlevel 1 goto :rollback");
             b.AppendLine("if not exist \"%EXE%\" goto :rollback");
@@ -4330,22 +4437,35 @@ public static class Updater
             //      백신이 새 exe 를 검사하느라 5초 안에 안 뜨는 일이 흔한데, 그때 되돌리려고
             //      막 시작한 exe 를 덮어쓰려다 실패해서 앱이 아예 안 켜졌다.
             //      파일 무결성(크기·존재)은 이미 확인했으니 여기서는 그냥 띄운다.
+            // 결과는 앱을 띄우기 **전에** 쓴다. 새 앱이 먼저 읽으면 결과를 놓친다.
+            b.AppendLine(">\"%LOG%\" 2>nul echo %RES% %AST_FROM% %AST_TO%");
             b.AppendLine("start \"\" \"%EXE%\"");
             b.AppendLine("del \"%BAK%\" 2>nul");
             b.AppendLine("goto :done");
+            // 실패 원인별로 결과만 적고 공통 실패 처리로 간다.
+            b.AppendLine(":f_dl");
+            b.AppendLine("set \"RES=DOWNLOAD\"");
+            b.AppendLine("goto :fail");
+            b.AppendLine(":f_bak");
+            b.AppendLine("set \"RES=BACKUP\"");
+            b.AppendLine("goto :fail");
             // 5) 교체가 깨졌으면 백업으로 되돌린다.
             b.AppendLine(":rollback");
+            b.AppendLine("set \"RES=ROLLBACK\"");
             b.AppendLine("copy /Y \"%BAK%\" \"%EXE%\" >nul");
             b.AppendLine("if errorlevel 1 goto :lost");
             b.AppendLine("del \"%BAK%\" 2>nul");
             // 6) 실패했지만 앱 파일은 멀쩡하다 — 되살리고 사이트로 안내한다.
             b.AppendLine(":fail");
+            b.AppendLine(">\"%LOG%\" 2>nul echo %RES% %AST_FROM% %AST_TO%");
             b.AppendLine("start \"\" \"%EXE%\"");
             b.AppendLine("start \"\" \"" + SiteUrl + "\"");
             b.AppendLine("goto :done");
             // 7) 복원까지 실패 — 백업을 남기고, 그래도 앱은 띄워본다.
             //    폴더도 열어 사용자가 .bak 을 직접 되돌릴 수 있게 한다.
             b.AppendLine(":lost");
+            b.AppendLine("set \"RES=LOST\"");
+            b.AppendLine(">\"%LOG%\" 2>nul echo %RES% %AST_FROM% %AST_TO%");
             // 배치는 순수 ASCII 여야 하므로 안내문도 영문으로 쓴다(한글은 깨진다).
             b.AppendLine("echo Update failed. Rename AutoShutdownTimer.exe.bak to AutoShutdownTimer.exe to restore. > \"%DIR%\\UPDATE-FAILED.txt\"");
             b.AppendLine("start \"\" \"%EXE%\"");
@@ -4373,6 +4493,9 @@ public static class Updater
             psi.EnvironmentVariables["AST_DIR"] = dir;
             psi.EnvironmentVariables["AST_PID"] = pid.ToString();
             psi.EnvironmentVariables["AST_CANCEL"] = cancel;
+            psi.EnvironmentVariables["AST_LOG"] = ResultPath;
+            psi.EnvironmentVariables["AST_FROM"] = SafeVer(fromVer);
+            psi.EnvironmentVariables["AST_TO"] = SafeVer(toTag);
         }
         catch { return false; }
 
@@ -4385,12 +4508,18 @@ public static class Updater
             return false;
         }
 
-        try { Updating = true; Application.Exit(); }
+        // ★ 종료가 취소됐는지는 윈도우가 돌려주는 결과로만 판단한다.
+        //   예전엔 Exit 직후 owner.IsDisposed 로 짐작했는데, Exit 는 FormClosing/Closed 만 돌리고
+        //   폼 해제는 메시지 루프가 끝날 때 일어날 수 있다. 그러면 정상 종료인데도 "취소"로 읽혀
+        //   취소 파일을 쓰고, 배치는 파일을 안 바꾼 채 물러나 앱만 사라졌다(1.0.2 에서 수정).
+        System.ComponentModel.CancelEventArgs exitArgs = new System.ComponentModel.CancelEventArgs();
+        bool exitCalled = false;
+        try { Updating = true; Application.Exit(exitArgs); exitCalled = true; }
         catch { }
         finally { Updating = false; }
 
         // 종료가 취소됐다면 배치에 취소를 알린다 (배치는 이 파일을 보고 조용히 물러난다).
-        if (owner != null && !owner.IsDisposed)
+        if (!exitCalled || exitArgs.Cancel)
         {
             try { File.WriteAllText(cancel, "1"); } catch { }
             return false;
