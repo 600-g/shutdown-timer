@@ -147,6 +147,22 @@ public static class Fonts
 
     public static Font System(float size) { return System(size, FontStyle.Regular); }
 
+    // 그리기(Paint·DrawItem) 안에서 쓰는 캐시 폰트 — 호출마다 new Font 하면 GDI 핸들이 쌓인다. 절대 Dispose 하지 말 것.
+    private static System.Collections.Generic.Dictionary<int, Font> regCache = new System.Collections.Generic.Dictionary<int, Font>();
+    private static System.Collections.Generic.Dictionary<int, Font> semiCache = new System.Collections.Generic.Dictionary<int, Font>();
+    public static Font RegularC(float size)
+    {
+        int key = (int)Math.Round(size * 100); Font c;
+        if (regCache.TryGetValue(key, out c) && c != null) return c;
+        c = Regular(size); if (c != null) regCache[key] = c; return c;
+    }
+    public static Font SemiC(float size)
+    {
+        int key = (int)Math.Round(size * 100); Font c;
+        if (semiCache.TryGetValue(key, out c) && c != null) return c;
+        c = Semi(size); if (c != null) semiCache[key] = c; return c;
+    }
+
     public static Font Regular(float size)
     {
         Font f = Make(famR, size, FontStyle.Regular);
@@ -552,7 +568,7 @@ public class DbListBox : ListBox
                     g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
                     // 스크롤바 숨김용으로 카드보다 넓게 깔린 경우를 고려해 부모(카드) 폭 기준으로 가운데
                     int w = Parent != null ? Math.Min(Width, Parent.Width - 10) : Width;
-                    TextRenderer.DrawText(g, EmptyHint, Fonts.Regular(9.5F), new Rectangle(0, 0, w, Height),
+                    TextRenderer.DrawText(g, EmptyHint, Fonts.RegularC(9.5F), new Rectangle(0, 0, w, Height),
                         Theme.Hint,
                         TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
                 }
@@ -801,11 +817,13 @@ public class MainForm : Form
     private Timer timer, killStepTimer;
     private List<string> killQueue = new List<string>();
     private int killIndex = 0, remainingSeconds = 0;
+    private DateTime powerTarget = DateTime.MinValue;
     private bool warned = false, anyFail = false, isTestRun = false;
     private bool powerRunning = false; private int powerKind = 0;
     private System.Collections.Generic.List<Sched> scheds = new System.Collections.Generic.List<Sched>();
     private Panel panelSched; private DbListBox schedBox; private Panel schedCard; private Label lblSchedNext; private Timer schedTimer;
     private string schedFiredKey = "";
+    private System.Collections.Generic.List<string> savedKill = null; private DateTime savedKillAt = DateTime.MinValue;
     private Panel panelPresets; private System.Collections.Generic.List<int> presets = new System.Collections.Generic.List<int>();
     private Panel alarmCard; private Label lahHelp;
     // 알림 표시 방식: 0=앱 팝업만, 1=윈도우 알림만, 2=둘 다
@@ -1150,7 +1168,7 @@ public class MainForm : Form
                 { using (SolidBrush b = new SolidBrush(fill)) g.FillPath(b, bp);
                   if (!onx) using (Pen pn = new Pen(Theme.PillBorder, 1F)) g.DrawPath(pn, bp); }
                 string lab = isPopup ? "팝업" : "윈도우";
-                Font lf = Fonts.Semi(9.5F);
+                Font lf = Fonts.SemiC(9.5F);
                 int iw = 14, gp = 5, tw2 = TextRenderer.MeasureText(g, lab, lf, new Size(200, stH), TextFormatFlags.NoPadding).Width;
                 int grpW = iw + gp + tw2, gx = (stW - grpW) / 2, cy = stH / 2;
                 using (Pen pn = new Pen(fg, 1.6F) { StartCap = LineCap.Round, EndCap = LineCap.Round })
@@ -1291,15 +1309,22 @@ public class MainForm : Form
         chkGaming.CheckedChanged += delegate { try { SaveSettings(); } catch { } };
         chkAutoRun.CheckedChanged += delegate { try { ApplyAutoRun(chkAutoRun.Checked); } catch { } };
         try { RefreshAutoRunToggle(); } catch { }
-        try { EnsureAutoRunTray(); } catch { }
+        System.Threading.ThreadPool.QueueUserWorkItem(delegate { try { EnsureAutoRunTray(); } catch { } });
         chkSeq.CheckedChanged += delegate { try { SaveSettings(); } catch { } };
         chkFallback.CheckedChanged += delegate { try { SaveSettings(); } catch { } };
         SetAlarmMode(0);
         SetMode(0);
         SetupTray();   // 트레이 상주 (닫기·최소화 시 백그라운드 유지)
+        if (updatedFrom != null) startInTray = false;
         if (startInTray) { trayTipShown = true; TrayNotify("자동 종료 타이머", "트레이에서 실행 중입니다. 아이콘을 더블클릭하면 열립니다."); }
         this.Shown += delegate
         {
+            if (updatedFrom != null)
+            {   // 업데이트 직후: 다른 창 뒤에 깔리지 않게 앞으로 + 결과 한 줄
+                try { this.TopMost = true; this.Activate(); this.TopMost = false; } catch { }
+                string from = updatedFrom.Length > 0 ? "v" + updatedFrom.TrimStart('v', 'V') + " → " : "";
+                ShowToast(from + "v" + VERSION + " 로 업데이트했어요", true);
+            }
             SetPlaceholder(txtMsg, "알림 내용 (비우면 \"시간이 되었습니다\")");
             SetPlaceholder(txtProg, "프로그램 이름 · 예: chrome.exe");
         };
@@ -1323,6 +1348,26 @@ public class MainForm : Form
                 try { Updater.Check(this, VERSION, true, ShowUpdateBadge); } catch { }
             };
             upChk.Start();
+        }
+        catch { }
+        // 업데이트로 바꾼 옛 exe(.old) 는 옛 프로세스가 끝난 뒤에야 지울 수 있다
+        try
+        {
+            Timer oldClean = new Timer(); oldClean.Interval = 5000; int tries = 0;
+            oldClean.Tick += delegate
+            {
+                tries++;
+                bool left = false;
+                try
+                {
+                    string ex = Application.ExecutablePath, d0 = Path.GetDirectoryName(ex), nm = Path.GetFileName(ex);
+                    foreach (string f in Directory.GetFiles(d0, nm + ".old*"))
+                    { try { File.Delete(f); } catch { left = true; } }
+                }
+                catch { }
+                if (!left || tries >= 6) { oldClean.Stop(); oldClean.Dispose(); }
+            };
+            oldClean.Start();
         }
         catch { }
         // 지난번 인앱 업데이트의 결과(성공/실패)를 한 번 알려준다. 창·트레이가 자리 잡은 뒤에.
@@ -1485,7 +1530,12 @@ public class MainForm : Form
         Rectangle bodyR = new Rectangle(0, 0, ClientSize.Width - 1, ClientSize.Height - 1);
         using (GraphicsPath bp = AppButton.Round(bodyR, 32))
         {
-            this.Region = new Region(bp);
+            if (bodyRegionSize != ClientSize)
+            {   // 칠할 때마다 Region 을 새로 만들면 SetWindowRgn 이 다시 칠하기를 불러 반복된다
+                bodyRegionSize = ClientSize;
+                Region old = this.Region; this.Region = new Region(bp);
+                if (old != null) { try { old.Dispose(); } catch { } }
+            }
             using (SolidBrush b = new SolidBrush(BEZEL)) g.FillPath(b, bp);
             // 클리핑 계단현상 완화: 같은 경로를 안티앨리어싱 테두리로 덧그림
             using (Pen p = new Pen(Color.FromArgb(150, 40, 44, 54), 1.6F)) g.DrawPath(p, bp);
@@ -1510,7 +1560,7 @@ public class MainForm : Form
         {
             int badgeW = islandCount > 0 ? 26 : 0;   // 개수 배지 자리
             Rectangle txtR = new Rectangle(ix + 6, iy, iw - 12 - badgeW, ih);
-            TextRenderer.DrawText(g, islandText, Fonts.Semi(11.5F), txtR,
+            TextRenderer.DrawText(g, islandText, Fonts.SemiC(11.5F), txtR,
                 Theme.IslandText,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
             if (islandCount > 0)
@@ -1526,7 +1576,7 @@ public class MainForm : Form
         }
 
         // 서명 (대기 중 아래)
-        TextRenderer.DrawText(g, "© 600g", Fonts.Semi(8F),
+        TextRenderer.DrawText(g, "© 600g", Fonts.SemiC(8F),
             new Rectangle(0, SCRH - 34, SCRW, 13),
             Theme.Hint,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
@@ -1568,7 +1618,7 @@ public class MainForm : Form
                 toastP.Paint += delegate(object s2, PaintEventArgs pe)
                 {
                     pe.Graphics.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
-                    TextRenderer.DrawText(pe.Graphics, toastMsg, Fonts.Semi(9.5F), toastP.ClientRectangle,
+                    TextRenderer.DrawText(pe.Graphics, toastMsg, Fonts.SemiC(9.5F), toastP.ClientRectangle,
                         toastTxt, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
                 };
                 toastP.Click += delegate { toastP.Visible = false; };
@@ -1577,7 +1627,7 @@ public class MainForm : Form
                 toastT.Tick += delegate { toastT.Stop(); toastP.Visible = false; };
             }
             toastP.BackColor = bg2;
-            int w = TextRenderer.MeasureText(toastMsg, Fonts.Semi(9.5F)).Width + 40;
+            int w = TextRenderer.MeasureText(toastMsg, Fonts.SemiC(9.5F)).Width + 40;
             if (w < 120) w = 120; if (w > SCRW - 36) w = SCRW - 36;
             int h = 32;
             toastP.Size = new Size(w, h);
@@ -1614,7 +1664,7 @@ public class MainForm : Form
             // 비어 있을 때 안내문: 리스트 대신 카드(더블버퍼·단색 배경)가 직접 그려 선명하게
             DbListBox dl = inner as DbListBox;
             if (dl != null && dl.Items.Count == 0 && dl.EmptyHint.Length > 0)
-                TextRenderer.DrawText(g, dl.EmptyHint, Fonts.Regular(10F), new Rectangle(8, 0, card.Width - 16, card.Height),
+                TextRenderer.DrawText(g, dl.EmptyHint, Fonts.RegularC(10F), new Rectangle(8, 0, card.Width - 16, card.Height),
                     Theme.Hint, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
         };
         DbListBox dbl = inner as DbListBox;
@@ -1697,6 +1747,7 @@ public class MainForm : Form
             return;
         }
         if (panelSched != null) panelSched.Visible = (m == 0);
+        if (m != 1 && panelFail != null && panelFail.Visible) HideFail();
         // 알림 탭은 토글=예약이라 시작/중지 버튼 불필요
         btnStart.Visible = (m != 2);
         btnCancel.Visible = (m != 2);
@@ -1872,19 +1923,57 @@ public class MainForm : Form
         return RunWait("schtasks", "/query /TN \"" + TASK_NAME + "\"", out o) == 0;
     }
 
-    // 예전 빌드에서 켠 자동 실행 작업은 명령에 --tray 가 없어 시작 시 창이 뜬다.
-    // 켜져 있는데 --tray 가 빠져 있으면 조용히 다시 등록해 고친다. (관리자 권한이라 가능)
+    // schtasks /SC ONLOGON 기본값은 ① 전원 연결 시에만 시작 ② 배터리로 바뀌면 중지 ③ 72시간 뒤 강제 종료다.
+    // 트레이 상주 앱에는 셋 다 치명적이라(노트북 배터리면 안 켜지거나 꺼지고, 사흘 켜두면 꺼진다) XML 로 등록한다.
+    private bool CreateAutoRunTask(out string outp)
+    {
+        outp = "";
+        string xmlPath = null;
+        try
+        {
+            string exe = Application.ExecutablePath;
+            string user = Environment.UserDomainName + "\\" + Environment.UserName;
+            string x = "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\r\n" +
+                "<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\r\n" +
+                "<Triggers><LogonTrigger><Enabled>true</Enabled><UserId>" + System.Security.SecurityElement.Escape(user) + "</UserId></LogonTrigger></Triggers>\r\n" +
+                "<Principals><Principal id=\"Author\"><UserId>" + System.Security.SecurityElement.Escape(user) + "</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>\r\n" +
+                "<Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>" +
+                "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>" +
+                "<AllowHardTerminate>true</AllowHardTerminate><StartWhenAvailable>false</StartWhenAvailable>" +
+                "<RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>" +
+                "<IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings>" +
+                "<AllowStartOnDemand>true</AllowStartOnDemand><Enabled>true</Enabled><Hidden>false</Hidden>" +
+                "<RunOnlyIfIdle>false</RunOnlyIfIdle><WakeToRun>false</WakeToRun>" +
+                "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit><Priority>7</Priority></Settings>\r\n" +
+                "<Actions Context=\"Author\"><Exec><Command>" + System.Security.SecurityElement.Escape(exe) + "</Command><Arguments>--tray</Arguments></Exec></Actions>\r\n" +
+                "</Task>\r\n";
+            xmlPath = Path.Combine(Path.GetTempPath(), "ast_task_" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".xml");
+            File.WriteAllText(xmlPath, x, Encoding.Unicode);
+            int rc = RunWait("schtasks", "/create /F /TN \"" + TASK_NAME + "\" /XML \"" + xmlPath + "\"", out outp);
+            if (rc == 0) return true;
+        }
+        catch (Exception ex) { outp = ex.Message; }
+        finally { if (xmlPath != null) { try { File.Delete(xmlPath); } catch { } } }
+        // XML 등록이 안 되는 환경이면 예전 방식으로라도
+        string exe2 = Application.ExecutablePath, o2;
+        bool ok = RunWait("schtasks", "/create /F /TN \"" + TASK_NAME + "\" /TR \"\\\"" + exe2 + "\\\" --tray\" /SC ONLOGON /RL HIGHEST", out o2) == 0;
+        if (!ok) outp += " / " + o2;
+        return ok;
+    }
+
+    // 켜져 있는 자동 실행 작업이 옛 방식(--tray 없음 · 배터리 조건 · 72시간 제한 · 다른 경로)이면 조용히 다시 등록한다.
     private void EnsureAutoRunTray()
     {
         try
         {
             string o;
-            if (RunWait("schtasks", "/query /TN \"" + TASK_NAME + "\" /V /FO LIST", out o) != 0) return;  // 작업 없음
-            if (o != null && o.IndexOf("--tray", StringComparison.OrdinalIgnoreCase) >= 0) return;         // 이미 정상
-            string exe = Application.ExecutablePath, o2;
-            RunWait("schtasks",
-                "/create /F /TN \"" + TASK_NAME + "\" /TR \"\\\"" + exe + "\\\" --tray\" /SC ONLOGON /RL HIGHEST", out o2);
-            Log("자동 실행 작업 --tray 로 갱신");
+            if (RunWait("schtasks", "/query /TN \"" + TASK_NAME + "\" /XML", out o) != 0 || string.IsNullOrEmpty(o)) return;  // 작업 없음
+            bool good = o.IndexOf("--tray", StringComparison.OrdinalIgnoreCase) >= 0
+                     && o.IndexOf("<DisallowStartIfOnBatteries>false", StringComparison.OrdinalIgnoreCase) >= 0
+                     && o.IndexOf("<ExecutionTimeLimit>PT0S", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (good) return;
+            string o2;
+            if (CreateAutoRunTask(out o2)) Log("자동 실행 작업 갱신 (배터리·시간 제한 해제)");
         }
         catch { }
     }
@@ -1908,8 +1997,7 @@ public class MainForm : Form
         int rc;
         if (on)
         {
-            rc = RunWait("schtasks",
-                "/create /F /TN \"" + TASK_NAME + "\" /TR \"\\\"" + exe + "\\\" --tray\" /SC ONLOGON /RL HIGHEST", out o);
+            rc = CreateAutoRunTask(out o) ? 0 : 1;
             if (rc == 0) { Log("자동 실행 등록됨"); ShowToast("자동 실행 켜짐", true); }
             else
             {
@@ -1972,7 +2060,7 @@ public class MainForm : Form
             return System.IO.Path.Combine(d, "settings.txt");
         }
     }
-    private const string VERSION = "1.1.0";   // 배포 버전 (semver) — 태그 v1.0.0 과 같은 값
+    private const string VERSION = "1.1.1";   // 배포 버전 (semver) — 태그 v1.0.0 과 같은 값
     private int sigClicks = 0; private DateTime sigFirst = DateTime.MinValue;
     private string loadedFrom = null;   // 진단: 설정을 어디서 불러왔는지
     private bool saveErrShown = false;
@@ -2185,6 +2273,8 @@ public class MainForm : Form
             { Log("설정 읽기 실패" + (loadErr.Length > 0 ? " · " + loadErr : " · 저장된 데이터 없음")); return; }
             loadedFrom = src;
             Log("설정 읽기 성공 · " + src + " · " + lines.Length + "줄");
+            loadingNow = true;
+            try {
             foreach (string line in lines)
             {
                 int i = line.IndexOf('=');
@@ -2263,6 +2353,7 @@ public class MainForm : Form
                 }
                 catch { }
             }
+            } finally { loadingNow = false; }
             RefreshSchedBox();
             // 파일에서 불러왔다면 레지스트리로 이관 (다음부터는 레지스트리에서 바로)
             if (loadedFrom != null && loadedFrom != "레지스트리")
@@ -2371,8 +2462,10 @@ public class MainForm : Form
     }
 
     private bool merging = false;
+    private bool loadingNow = false;
     private void SaveSettings()
     {
+        if (loadingNow) return;
         try
         {
             // 아직 저장소를 못 읽은 상태에서 저장하면 기존 데이터가 날아가므로, 먼저 병합 시도
@@ -2381,6 +2474,8 @@ public class MainForm : Form
                 merging = true;
                 try { LoadSettings(); RebuildPresets(); RelayoutAlarms(); ArmLoadedAlarms(); } catch { }
                 merging = false;
+                // 저장소가 있는데 오류로 못 읽었다면 기본값으로 덮어쓰지 않는다 (다음 읽기를 기다린다)
+                if (loadedFrom == null && loadErr.Length > 0) return;
             }
             System.Text.StringBuilder sb = new System.Text.StringBuilder();
             System.Text.StringBuilder ps = new System.Text.StringBuilder();
@@ -2468,7 +2563,7 @@ public class MainForm : Form
             {
                 string[] dn = new string[] { "월", "화", "수", "목", "금", "토", "일" };
                 int dd = (best.Date - now.Date).Days;
-                string day = dd == 0 ? "오늘" : (dd == 1 ? "내일" : dn[DowBit(best)]);
+                string day = dd == 0 ? "오늘" : (dd == 1 ? "내일" : (dd >= 7 ? "다음 주 " : "") + dn[DowBit(best)]);
                 txt = "다음 · " + day + " " + best.ToString("HH:mm");
             }
             if (lblSchedNext.Text != txt) lblSchedNext.Text = txt;
@@ -2525,13 +2620,13 @@ public class MainForm : Form
             using (SolidBrush bb = new SolidBrush(on ? (Theme.Dark ? Color.FromArgb(34, 74, 52) : Color.FromArgb(223, 245, 231)) : Theme.BadgeOffFill)) g.FillPath(bb, bp);
             if (on) using (Pen pn = new Pen(Color.FromArgb(52, 199, 89), 1.3F)) g.DrawPath(pn, bp);
         }
-        TextRenderer.DrawText(g, sc.Key, Fonts.Semi(9.5F), new Rectangle(bx, by, bw, bh),
+        TextRenderer.DrawText(g, sc.Key, Fonts.SemiC(9.5F), new Rectangle(bx, by, bw, bh),
             on ? (Theme.Dark ? Color.FromArgb(96, 220, 140) : Color.FromArgb(24, 138, 72)) : Theme.OffText,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
         int visR = (schedCard != null ? schedCard.Width - 10 : r.Right);
         int tw = 32, th = 18, tx = visR - tw - 20, tyv = r.Y + (r.Height - th) / 2;
         int textL = bx + bw + 10;
-        TextRenderer.DrawText(g, sc.DaysText, Fonts.Regular(9.5F), new Rectangle(textL, r.Y, Math.Max(10, tx - 8 - textL), r.Height),
+        TextRenderer.DrawText(g, sc.DaysText, Fonts.RegularC(9.5F), new Rectangle(textL, r.Y, Math.Max(10, tx - 8 - textL), r.Height),
             on ? INK : Theme.OffText,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
         using (GraphicsPath tp = AppButton.Round(new Rectangle(tx, tyv, tw, th), th / 2))
@@ -2575,8 +2670,15 @@ public class MainForm : Form
         Log("요일 예약 " + sc.Key + " (" + sc.DaysText + ") · 1분 뒤 전원 끄기");
         // 이미 전원 끄기가 1분 안쪽으로 걸려 있으면 그대로 둔다
         if (powerRunning && powerKind == 0 && remainingSeconds <= 60) return;
+        savedKill = null;
+        if (powerRunning && powerKind == 1)
+        {   // 걸어둔 프로그램 종료 예약은 버리지 않고 보관 — 전원 끄기를 [중지]하면 되살린다
+            savedKill = new System.Collections.Generic.List<string>(pendingTargets ?? new System.Collections.Generic.List<string>());
+            savedKillAt = powerTarget;
+        }
         if (powerRunning) { powerRunning = false; try { killStepTimer.Stop(); } catch { } }
         remainingSeconds = 60;
+        powerTarget = DateTime.Now.AddSeconds(60);
         warned = false;
         powerRunning = true; powerKind = 0;
         // 취소할 수 있게 창을 보여준다 (무음 모드면 포커스를 뺏지 않고 알림만)
@@ -2607,11 +2709,11 @@ public class MainForm : Form
             Graphics g = pe.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias; g.PixelOffsetMode = PixelOffsetMode.Half;
             using (GraphicsPath bp = AppButton.Round(new Rectangle(0, 0, DW - 1, DH - 1), 12))
             using (Pen pen = new Pen(Theme.Border, 1F)) g.DrawPath(pen, bp);
-            TextRenderer.DrawText(g, editing ? "요일 예약 수정" : "요일 예약 추가", Fonts.Semi(11F), new Rectangle(18, 14, DW - 36, 20), INK,
+            TextRenderer.DrawText(g, editing ? "요일 예약 수정" : "요일 예약 추가", Fonts.SemiC(11F), new Rectangle(18, 14, DW - 36, 20), INK,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-            TextRenderer.DrawText(g, ":", Fonts.Semi(13F), new Rectangle(DW / 2 - 8, 46, 16, 40), INK,
+            TextRenderer.DrawText(g, ":", Fonts.SemiC(13F), new Rectangle(DW / 2 - 8, 46, 16, 40), INK,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-            TextRenderer.DrawText(g, "요일", Fonts.Regular(8.5F), new Rectangle(18, 100, DW - 36, 16), MUTED,
+            TextRenderer.DrawText(g, "요일", Fonts.RegularC(8.5F), new Rectangle(18, 100, DW - 36, 16), MUTED,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
         };
 
@@ -2639,7 +2741,7 @@ public class MainForm : Form
                 using (GraphicsPath bp = AppButton.Round(new Rectangle(0, 0, cw - 1, ch - 1), 8))
                 { using (SolidBrush b = new SolidBrush(fill)) g.FillPath(b, bp);
                   if (!on) using (Pen pn = new Pen(Theme.PillBorder, 1F)) g.DrawPath(pn, bp); }
-                TextRenderer.DrawText(g, nm, Fonts.Semi(9.5F), new Rectangle(0, 0, cw, ch), fg,
+                TextRenderer.DrawText(g, nm, Fonts.SemiC(9.5F), new Rectangle(0, 0, cw, ch), fg,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
             };
             c.Click += delegate { selDays[0] ^= bit; ((Control)c).Invalidate(); };
@@ -2651,10 +2753,14 @@ public class MainForm : Form
             try { sh.CommitEdit(); sm.CommitEdit(); } catch { }
             int h = (int)sh.Value, m = (int)sm.Value, days = selDays[0] & 0x7F;
             for (int q = 0; q < scheds.Count; q++)
-                if (q != idx && scheds[q].H == h && scheds[q].M == m && scheds[q].Days == days)
+                if (scheds[q] != cur && scheds[q].H == h && scheds[q].M == m && scheds[q].Days == days)
                 { ShowToast("이미 있는 예약이에요", false); return; }
             Sched t = editing ? cur : new Sched();
-            t.H = h; t.M = m; t.Days = days; t.On = true;
+            t.H = h; t.M = m; t.Days = days;
+            if (!editing) t.On = true;
+            // 지금 이 분으로 저장하면 몇 초 만에 꺼지기 시작하므로, 이번 분은 건너뛴다
+            DateTime nw = DateTime.Now;
+            if (h == nw.Hour && m == nw.Minute) schedFiredKey = nw.ToString("yyyyMMddHHmm");
             if (!editing) scheds.Add(t);
             RefreshSchedBox();
             try { SaveSettings(); } catch { }
@@ -2724,7 +2830,7 @@ public class MainForm : Form
         }
         x += 24;
         string txt = it != null ? it.Display : o.ToString();
-        TextRenderer.DrawText(e.Graphics, txt, Fonts.Regular(9.5F),
+        TextRenderer.DrawText(e.Graphics, txt, Fonts.RegularC(9.5F),
             new Rectangle(x, e.Bounds.Y, Math.Max(20, (lb.Parent != null ? lb.Parent.ClientSize.Width - 6 : e.Bounds.Width) - x - 22), e.Bounds.Height),
             INK, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
     }
@@ -2893,8 +2999,9 @@ public class MainForm : Form
         f.Text = "실행 기록";
         f.ClientSize = new Size(560, 380);
         f.StartPosition = FormStartPosition.CenterParent;
-        f.BackColor = Color.White;
+        f.BackColor = Theme.Card;
         TextBox t = new TextBox();
+        t.BackColor = Theme.Card; t.ForeColor = Theme.Ink;
         t.Multiline = true;
         t.ReadOnly = true;
         t.ScrollBars = ScrollBars.Both;
@@ -3006,6 +3113,7 @@ public class MainForm : Form
             return;
         }
         remainingSeconds = (int)numMinutes.Value * 60;
+        powerTarget = DateTime.Now.AddSeconds(remainingSeconds);
         warned = false;
         powerRunning = true; powerKind = mode;
         if (mode == 1) pendingTargets = CollectTargets();
@@ -3020,7 +3128,28 @@ public class MainForm : Form
     {
         // 알림은 토글이 곧 예약 상태 → 여기서 건드리면 토글은 켜져 있는데 안 울리는 상태가 됨. 무시.
         if (mode == 2 || !powerRunning) return;
+        StopPower();
+    }
+    // 전원/프로그램 예약 중지 (탭과 무관 — 트레이 메뉴에서도 부른다)
+    private void StopPower()
+    {
+        if (!powerRunning) return;
+        bool wasSchedPower = powerKind == 0;
         powerRunning = false; killStepTimer.Stop();
+        // 요일 예약이 덮어썼던 프로그램 종료 예약이 아직 남아 있으면 되살린다
+        if (wasSchedPower && savedKill != null && savedKillAt > DateTime.Now)
+        {
+            pendingTargets = savedKill; powerKind = 1; powerTarget = savedKillAt;
+            remainingSeconds = (int)Math.Ceiling((powerTarget - DateTime.Now).TotalSeconds);
+            warned = remainingSeconds <= 60; powerRunning = true; savedKill = null;
+            UpdateButtons(); RefreshStatus(); UpdateEta();
+            UpdateCountdown(); SetIslandPower(lblCountdown.Text);
+            if (!timer.Enabled) timer.Start();
+            ShowToast("전원 끄기 중지 · 프로그램 종료 예약은 그대로", false);
+            Log("요일 예약 중지 → 프로그램 종료 예약 복원");
+            return;
+        }
+        savedKill = null;
         if (!alarmRunning) { SetIsland(""); timer.Stop(); }
         else UpdateAlarmIsland();
         UpdateButtons();
@@ -3065,7 +3194,8 @@ public class MainForm : Form
         if (alarmRunning) AlarmTick();
         if (powerRunning)
         {
-            remainingSeconds--;
+            remainingSeconds = (int)Math.Ceiling((powerTarget - DateTime.Now).TotalSeconds);
+            if (remainingSeconds < 0) remainingSeconds = 0;
             if (remainingSeconds <= 60 && !warned)
             {
                 warned = true;
@@ -3352,7 +3482,7 @@ public class MainForm : Form
             using (SolidBrush bb = new SolidBrush(armed ? (Theme.Dark ? Color.FromArgb(34, 74, 52) : Color.FromArgb(223, 245, 231)) : Theme.BadgeOffFill)) g.FillPath(bb, bp);
             if (armed) using (Pen pn = new Pen(Color.FromArgb(52, 199, 89), 1.3F)) g.DrawPath(pn, bp);
         }
-        TextRenderer.DrawText(g, head, Fonts.Semi(9.5F),
+        TextRenderer.DrawText(g, head, Fonts.SemiC(9.5F),
             new Rectangle(bx, by, bw, bh), armed ? (Theme.Dark ? Color.FromArgb(96, 220, 140) : Color.FromArgb(24, 138, 72)) : cMain,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
         // 토글 (슬림) — 스크롤바 숨김으로 리스트가 카드보다 넓으므로 '보이는 우측' 기준으로 배치
@@ -3374,7 +3504,7 @@ public class MainForm : Form
         if (hasNote)   // 메모 있으면 작은 점
         { using (SolidBrush nb = new SolidBrush(on ? ACCENT : Theme.OffSub)) g.FillEllipse(nb, cx2 - 6, cym - 3, 6, 6); cx2 -= 6 + 6; }
         int msgLeft = bx + bw + 10, msgRight = cx2;
-        TextRenderer.DrawText(g, defMsg[e.Index], Fonts.Regular(9F),
+        TextRenderer.DrawText(g, defMsg[e.Index], Fonts.RegularC(9F),
             new Rectangle(msgLeft, r.Y, Math.Max(10, msgRight - msgLeft), r.Height), cSub,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
         using (GraphicsPath tp = AppButton.Round(new Rectangle(tx, tyv, tw, th), th / 2))
@@ -3485,15 +3615,15 @@ public class MainForm : Form
         dlg.Paint += delegate(object s2, PaintEventArgs pe)
         {
             Graphics g = pe.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias; g.PixelOffsetMode = PixelOffsetMode.Half;
-            TextRenderer.DrawText(g, kind == 1 ? "요일" : "", Fonts.Regular(8.5F),
+            TextRenderer.DrawText(g, kind == 1 ? "요일" : "", Fonts.RegularC(8.5F),
                 new Rectangle(18, 166, DW - 36, 16), MUTED, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
             using (GraphicsPath bp = AppButton.Round(new Rectangle(0, 0, DW - 1, DH - 1), 12))
             using (Pen pen = new Pen(Theme.Border, 1F)) g.DrawPath(pen, bp);
-            TextRenderer.DrawText(g, "메모", Fonts.Semi(11F), new Rectangle(18, 14, DW - 36, 20), INK,
+            TextRenderer.DrawText(g, "메모", Fonts.SemiC(11F), new Rectangle(18, 14, DW - 36, 20), INK,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-            TextRenderer.DrawText(g, "Enter 저장 · Shift+Enter 줄바꿈", Fonts.Regular(8F), new Rectangle(18, 14, DW - 36, 20), Theme.Hint,
+            TextRenderer.DrawText(g, "Enter 저장 · Shift+Enter 줄바꿈", Fonts.RegularC(8F), new Rectangle(18, 14, DW - 36, 20), Theme.Hint,
                 TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-            TextRenderer.DrawText(g, head, Fonts.Regular(9F), new Rectangle(18, 34, DW - 36, 18), MUTED,
+            TextRenderer.DrawText(g, head, Fonts.RegularC(9F), new Rectangle(18, 34, DW - 36, 18), MUTED,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
         };
 
@@ -3552,7 +3682,7 @@ public class MainForm : Form
                     using (GraphicsPath bp = AppButton.Round(new Rectangle(0, 0, cw - 1, ch - 1), 8))
                     { using (SolidBrush b = new SolidBrush(fill)) g.FillPath(b, bp);
                       if (!sel) using (Pen pn = new Pen(Theme.PillBorder, 1F)) g.DrawPath(pn, bp); }
-                    TextRenderer.DrawText(g, nm, Fonts.Semi(9.5F), new Rectangle(0, 0, cw, ch), fg,
+                    TextRenderer.DrawText(g, nm, Fonts.SemiC(9.5F), new Rectangle(0, 0, cw, ch), fg,
                         TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
                 };
                 c.Click += delegate { selDays[0] ^= bit; ((Control)c).Invalidate(); };
@@ -3624,7 +3754,7 @@ public class MainForm : Form
         {
             using (Bitmap bmp = new Bitmap(1, 1))
             using (Graphics mg = Graphics.FromImage(bmp))
-                noteH = TextRenderer.MeasureText(mg, note, Fonts.Regular(10F),
+                noteH = TextRenderer.MeasureText(mg, note, Fonts.RegularC(10F),
                     new Size(PW - 44, 400), TextFormatFlags.WordBreak).Height;
             if (noteH > 150) noteH = 150;   // 너무 길면 잘라서(스크롤 없이) 상한
         }
@@ -3658,11 +3788,11 @@ public class MainForm : Form
                 g.DrawLine(pen, cxp, 46, cxp + 6, 49);
             }
             // 제목 (한 줄, 굵게)
-            TextRenderer.DrawText(g, m2, Fonts.Semi(13F), new Rectangle(16, titleY, PW - 32, titleH), INK,
+            TextRenderer.DrawText(g, m2, Fonts.SemiC(13F), new Rectangle(16, titleY, PW - 32, titleH), INK,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
             // 본문 메모 (여러 줄)
             if (note2.Length > 0)
-                TextRenderer.DrawText(g, note2, Fonts.Regular(10F), new Rectangle(22, noteYc, PW - 44, noteHc), MUTED,
+                TextRenderer.DrawText(g, note2, Fonts.RegularC(10F), new Rectangle(22, noteYc, PW - 44, noteHc), MUTED,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.Top | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis);
         };
 
@@ -3869,6 +3999,8 @@ public class MainForm : Form
     private NotifyIcon tray; private ContextMenuStrip trayMenu;
     private Icon trayIconRef;            // GC 방지용 보관 (예전 아이콘 사라짐 버그 원인)
     private bool reallyExit = false;
+    internal static string updatedFrom = null;
+    private Size bodyRegionSize = Size.Empty;   // 인앱 업데이트로 막 다시 켜졌으면 이전 버전 문자열
     internal static bool startInTray = false;   // --tray 로 실행되면 창을 띄우지 않고 트레이에서 시작
     private bool allowVisible = false;
     protected override void SetVisibleCore(bool value)
@@ -3892,7 +4024,11 @@ public class MainForm : Form
             miOpen.Click += delegate { RestoreFromTray(); };
             ToolStripMenuItem miExit = new ToolStripMenuItem("완전 종료");
             miExit.Click += delegate { reallyExit = true; this.Close(); };
+            ToolStripMenuItem miStop = new ToolStripMenuItem("예약 중지");
+            miStop.Click += delegate { StopPower(); };
+            trayMenu.Opening += delegate { miStop.Visible = powerRunning; };
             trayMenu.Items.Add(miOpen);
+            trayMenu.Items.Add(miStop);
             trayMenu.Items.Add(new ToolStripSeparator());
             trayMenu.Items.Add(miExit);
 
@@ -4136,7 +4272,8 @@ public class MainForm : Form
         // 업데이트로 인한 종료일 때는 묻지 않는다. 여기서 모달이 뜨면 종료가 멈추는데
         // 교체 배치는 기다리다 지쳐 진행해버려서, 살아 있는 앱을 덮어쓰려다 실패하고
         // 사용자 눈에는 "업데이트를 눌렀더니 앱이 사라졌다"로 보인다.
-        if (!Updater.Updating && (powerRunning || alarmRunning))
+        bool sysClosing = e.CloseReason == CloseReason.WindowsShutDown || e.CloseReason == CloseReason.TaskManagerClosing;
+        if (!Updater.Updating && !sysClosing && (powerRunning || alarmRunning))
         {
             if (MessageBox.Show("예약이 진행 중입니다. 종료할까요?", "확인",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.No)
@@ -4169,7 +4306,6 @@ public class MainForm : Form
         catch { }
     }
 
-    [STAThread]
     [DllImport("user32.dll")] private static extern bool SetProcessDPIAware();
 
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
@@ -4190,6 +4326,8 @@ public class MainForm : Form
         base.WndProc(ref m);
     }
 
+    // ★ STA 필수 — 클립보드·파일 대화상자·셸 실행이 STA 에서만 제대로 동작한다.
+    [STAThread]
     public static void Main(string[] args)
     {
         // 디스플레이 배율(125%/150%)에서 Windows가 화면을 통째로 확대(=뿌옇게)하는 걸 막고
@@ -4207,6 +4345,20 @@ public class MainForm : Form
 
         bool retried = false;
         foreach (string a in args) { if (a == "--noelevate") retried = true; if (a == "--tray") MainForm.startInTray = true; }
+        // --updated <옛PID> <옛버전> : 인앱 업데이트가 새 exe 를 띄운 경우.
+        // 옛 앱이 완전히 끝나야 뮤텍스를 잡을 수 있다(안 기다리면 "이미 실행 중" 으로 조용히 끝난다).
+        for (int ai = 0; ai < args.Length; ai++)
+        {
+            if (args[ai] != "--updated") continue;
+            int oldPid = 0;
+            if (ai + 1 < args.Length) int.TryParse(args[ai + 1], out oldPid);
+            MainForm.updatedFrom = (ai + 2 < args.Length && !args[ai + 2].StartsWith("--")) ? args[ai + 2] : "";
+            if (oldPid > 0)
+            {
+                try { using (Process op = Process.GetProcessById(oldPid)) op.WaitForExit(20000); } catch { }
+            }
+            retried = true;   // 옛 앱이 이미 관리자였다 — 다시 권한 상승을 묻지 않는다
+        }
         bool admin = false;
         try { admin = IsAdmin(); } catch { }
         if (!admin && !retried)
@@ -4472,7 +4624,7 @@ public static class Updater
             }
             if (state == 3)
             {
-                AppSheet s = new AppSheet("업데이트를 시작하지 못했어요", myVer, null);
+                AppSheet s = new AppSheet("업데이트하지 못했어요", myVer, null);
                 s.SetStatus("지금 버전은 그대로예요", Theme.Danger);
                 s.Body.AddText("잠시 뒤 버전 줄을 다시 눌러보세요.");
                 s.Body.AddSub("계속 안 되면 600g.net 에서 직접 받으실 수 있어요.");
@@ -4485,9 +4637,7 @@ public static class Updater
             up.Body.AddHead("새 버전에 담긴 것");
             AppSheet.AddMarkdown(up.Body, notes);
             up.Body.AddGap(8);
-            up.Body.AddSub("[지금 받기] 를 누르면 앱이 닫히고, 새 버전으로 바꾼 뒤 저절로 다시 열려요.");
-            up.Body.AddSub("보통 30초 안쪽이에요. 그동안 앱을 다시 켜지 말고 기다려 주세요.");
-            up.Body.AddSub("끝나면 결과를 알려드려요.");
+            up.Body.AddSub("받기가 끝나면 앱이 잠깐 닫혔다가 새 버전으로 다시 열려요.");
             bool busyPower = false;
             if (PowerBusy != null) { try { busyPower = PowerBusy(); } catch { } }
             if (busyPower) up.Body.AddWarn("전원 끄기 예약이 걸려 있어요. 지금 받으면 예약은 취소돼요.");
@@ -4591,166 +4741,217 @@ public static class Updater
         return "v" + (v / 1000000) + "." + (v / 1000 % 1000) + "." + (v % 1000);
     }
 
-    /// 교체 배치를 먼저 띄우고 앱을 종료한다. 배치는 앱이 실제로 닫힌 뒤에만 교체한다.
-    /// 종료가 취소되면 배치에 취소 파일로 알리고 false 를 돌려준다.
-    /// fromVer·toTag 는 결과 기록용이다 — 다음 실행 때 ShowLastResult 가 읽어 알려준다.
+    [DllImport("user32.dll")] static extern bool AllowSetForegroundWindow(int pid);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool DeleteFileW(string lpFileName);
+
+    /// 인앱 업데이트 (1.1.1~). **앱이 살아 있는 동안** 내려받고, 교체하고, 새 앱을 띄운 뒤 종료한다.
+    ///
+    /// 예전 방식은 앱을 먼저 끄고 숨은 cmd+PowerShell 이 내려받기·교체·재실행을 맡았는데,
+    /// 그 사슬이 끊기면(백신 차단·네트워크 멈춤·프로세스 종료 등) 사용자 눈에는 "앱이 꺼지기만 했다".
+    /// 지금은 앱 밖에서 도는 단계가 없다:
+    ///   1) 진행 창을 띄우고 zip 을 내려받는다 (실패 → 아무것도 안 바뀐 채 안내)
+    ///   2) exe 를 꺼내 검사(MZ·크기)하고 차단 표시를 지운다
+    ///   3) 실행 중인 exe 는 지울 수 없지만 **이름은 바꿀 수 있다** → 지금 exe 를 .old 로 바꾸고 새 exe 를 제자리에
+    ///      (어느 단계든 실패하면 .old 를 되돌린다)
+    ///   4) 새 exe 를 "--updated <내 PID> <내 버전>" 으로 띄운다. 새 앱은 내가 끝날 때까지 기다렸다가 뜬다.
+    ///   5) 종료. 남은 .old 는 새 앱이 지운다.
+    /// ★ "새 앱이 떴는지 보고 안 떴으면 되돌리기" 는 넣지 않는다(CLAUDE.md 실사고). 파일 검사로 충분하다.
     static bool Install(Form owner, string fromVer, string toTag)
     {
-        string bat = null, cancel = null;
-        ProcessStartInfo psi = null;
+        string tmp = null;
         try
         {
             string exePath = Application.ExecutablePath;
-            string dir     = Path.GetDirectoryName(exePath);
-            int    pid     = Process.GetCurrentProcess().Id;
-            string stamp = Guid.NewGuid().ToString("N").Substring(0, 8);
-            bat    = Path.Combine(Path.GetTempPath(), "ast_update_" + stamp + ".bat");
-            cancel = Path.Combine(Path.GetTempPath(), "ast_cancel_" + stamp + ".txt");
+            string dir = Path.GetDirectoryName(exePath);
+            tmp = Path.Combine(Path.GetTempPath(), "ast_up_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+            Directory.CreateDirectory(tmp);
+            string zip = Path.Combine(tmp, "u.zip");
 
-            // 배치 본문은 **순수 ASCII** 로만 만든다. 경로는 환경 변수로 넘긴다 —
-            // 환경 블록은 유니코드로 전달되므로 코드페이지 문제가 아예 없다.
-            // 경로를 배치에 글자로 박으면 비한국어 윈도우나 % 가 든 경로에서 깨진다.
-            StringBuilder b = new StringBuilder();
-            b.AppendLine("@echo off");
-            b.AppendLine("setlocal enableextensions");
-            b.AppendLine("set \"PID=%AST_PID%\"");
-            b.AppendLine("set \"EXE=%AST_EXE%\"");
-            b.AppendLine("set \"DIR=%AST_DIR%\"");
-            b.AppendLine("set \"CANCEL=%AST_CANCEL%\"");
-            b.AppendLine("set \"BAK=%AST_EXE%.bak\"");
-            // 결과 기록: 다음 실행 때 앱이 읽고 성공/실패를 알려준다. 형식 "<결과> <이전> <목표>"
-            b.AppendLine("set \"LOG=%AST_LOG%\"");
-            b.AppendLine("set \"RES=OK\"");
-            b.AppendLine("set \"TMPD=%TEMP%\\ast_up_%RANDOM%%RANDOM%\"");
-            // 1) 앱이 완전히 끝날 때까지 최대 60초 대기.
-            //    ★ 타임아웃이면 절대 교체하지 않는다 — 살아 있는 exe 를 덮어쓰면 앱을 잃는다.
-            //    ★ 앱이 종료를 취소하면 취소 파일을 만든다. 그러면 조용히 물러난다.
-            b.AppendLine("for /L %%i in (1,1,60) do (");
-            b.AppendLine("  if exist \"%CANCEL%\" goto :quit");
-            b.AppendLine("  tasklist /FI \"PID eq %PID%\" 2>nul | find \"%PID%\" >nul || goto :gone");
-            b.AppendLine("  ping -n 2 127.0.0.1 >nul");
-            b.AppendLine(")");
-            b.AppendLine("set \"RES=TIMEOUT\"");
-            b.AppendLine("goto :fail");
-            b.AppendLine(":gone");
-            b.AppendLine("if exist \"%CANCEL%\" goto :quit");
-            b.AppendLine("md \"%TMPD%\" 2>nul");
-            // 2) 내려받기 + 압축 풀기 (TLS 1.2 명시 — 옛 파워셸 기본값으로는 GitHub 연결 실패)
-            b.AppendLine("powershell -NoProfile -ExecutionPolicy Bypass -Command " +
-                         "\"[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; " +
-                         "Invoke-WebRequest -Uri '" + ZipUrl + "' -OutFile (Join-Path $env:TMPD 'u.zip') -UseBasicParsing; " +
-                         "Expand-Archive -LiteralPath (Join-Path $env:TMPD 'u.zip') -DestinationPath $env:TMPD -Force; " +
-                         "Get-ChildItem -LiteralPath $env:TMPD -Recurse -File | Unblock-File\" || goto :f_dl");
-            b.AppendLine("if not exist \"%TMPD%\\AutoShutdownTimer.exe\" goto :f_dl");
-            // ★ 인터넷에서 받은 파일에는 차단 표시가 붙는다. 압축을 풀면 그 표시가 exe 로 옮겨가고
-            //   윈도우가 실행을 막는다(보안패치.bat 이 하는 일과 같다). 위 Unblock-File 이 1차,
-            //   아래 삭제가 2차 방어다. 이걸 빼면 업데이트 후 앱이 다시 켜지지 않는다.
-            b.AppendLine("del \"%TMPD%\\AutoShutdownTimer.exe:Zone.Identifier\" 2>nul");
-            // 3) ★ 백업 → 교체 → 검증. 한 단계라도 어긋나면 원래 exe 를 되돌린다.
-            //    제자리 덮어쓰기만 하면 복사가 중간에 끊겼을 때 되돌릴 방법이 없다.
-            b.AppendLine("copy /Y \"%EXE%\" \"%BAK%\" >nul");
-            b.AppendLine("if errorlevel 1 goto :f_bak");
-            b.AppendLine("copy /Y \"%TMPD%\\AutoShutdownTimer.exe\" \"%EXE%\" >nul");
-            b.AppendLine("if errorlevel 1 goto :rollback");
-            b.AppendLine("if not exist \"%EXE%\" goto :rollback");
-            b.AppendLine("for %%z in (\"%EXE%\") do if %%~zz LSS 500000 goto :rollback");
-            // 부속 파일(설명서·보안패치)은 실패해도 앱 실행에 지장이 없으므로 결과를 따지지 않는다
-            b.AppendLine("for %%f in (\"%TMPD%\\*\") do (");
-            b.AppendLine("  if /I not \"%%~nxf\"==\"u.zip\" if /I not \"%%~nxf\"==\"AutoShutdownTimer.exe\" copy /Y \"%%f\" \"%DIR%\\\" >nul");
-            b.AppendLine(")");
-            // 4) 새 앱을 띄운다.
-            //    ★ "떴는지 확인하고 안 떴으면 되돌리기" 는 넣었다가 뺐다(1.0.2 에서 실제로 사고).
-            //      백신이 새 exe 를 검사하느라 5초 안에 안 뜨는 일이 흔한데, 그때 되돌리려고
-            //      막 시작한 exe 를 덮어쓰려다 실패해서 앱이 아예 안 켜졌다.
-            //      파일 무결성(크기·존재)은 이미 확인했으니 여기서는 그냥 띄운다.
-            // 결과는 앱을 띄우기 **전에** 쓴다. 새 앱이 먼저 읽으면 결과를 놓친다.
-            b.AppendLine(">\"%LOG%\" 2>nul echo %RES% %AST_FROM% %AST_TO%");
-            b.AppendLine("start \"\" \"%EXE%\"");
-            b.AppendLine("del \"%BAK%\" 2>nul");
-            b.AppendLine("goto :done");
-            // 실패 원인별로 결과만 적고 공통 실패 처리로 간다.
-            b.AppendLine(":f_dl");
-            b.AppendLine("set \"RES=DOWNLOAD\"");
-            b.AppendLine("goto :fail");
-            b.AppendLine(":f_bak");
-            b.AppendLine("set \"RES=BACKUP\"");
-            b.AppendLine("goto :fail");
-            // 5) 교체가 깨졌으면 백업으로 되돌린다.
-            b.AppendLine(":rollback");
-            b.AppendLine("set \"RES=ROLLBACK\"");
-            b.AppendLine("copy /Y \"%BAK%\" \"%EXE%\" >nul");
-            b.AppendLine("if errorlevel 1 goto :lost");
-            b.AppendLine("del \"%BAK%\" 2>nul");
-            // 6) 실패했지만 앱 파일은 멀쩡하다 — 되살리고 사이트로 안내한다.
-            b.AppendLine(":fail");
-            b.AppendLine(">\"%LOG%\" 2>nul echo %RES% %AST_FROM% %AST_TO%");
-            b.AppendLine("start \"\" \"%EXE%\"");
-            b.AppendLine("start \"\" \"" + SiteUrl + "\"");
-            b.AppendLine("goto :done");
-            // 7) 복원까지 실패 — 백업을 남기고, 그래도 앱은 띄워본다.
-            //    폴더도 열어 사용자가 .bak 을 직접 되돌릴 수 있게 한다.
-            b.AppendLine(":lost");
-            b.AppendLine("set \"RES=LOST\"");
-            b.AppendLine(">\"%LOG%\" 2>nul echo %RES% %AST_FROM% %AST_TO%");
-            // 배치는 순수 ASCII 여야 하므로 안내문도 영문으로 쓴다(한글은 깨진다).
-            b.AppendLine("echo Update failed. Rename AutoShutdownTimer.exe.bak to AutoShutdownTimer.exe to restore. > \"%DIR%\\UPDATE-FAILED.txt\"");
-            b.AppendLine("start \"\" \"%EXE%\"");
-            b.AppendLine("start \"\" \"%DIR%\"");
-            b.AppendLine("start \"\" \"" + SiteUrl + "\"");
-            b.AppendLine("goto :done");
-            b.AppendLine(":quit");
-            b.AppendLine(":done");
-            b.AppendLine("del \"%CANCEL%\" 2>nul");
-            b.AppendLine("rd /S /Q \"%TMPD%\" 2>nul");
-            b.AppendLine("(goto) 2>nul & del \"%~f0\"");
+            // 1) 내려받기
+            if (!Download(owner, ZipUrl, zip)) { Cleanup(tmp); return false; }
 
-            File.WriteAllText(bat, b.ToString(), Encoding.ASCII);
+            // 2) 압축 풀기 + 검사
+            string newExe = Path.Combine(tmp, "AutoShutdownTimer.exe");
+            using (FileStream zs = File.OpenRead(zip))
+            using (System.IO.Compression.ZipArchive za = new System.IO.Compression.ZipArchive(zs, System.IO.Compression.ZipArchiveMode.Read))
+            {
+                foreach (System.IO.Compression.ZipArchiveEntry en in za.Entries)
+                {
+                    if (string.IsNullOrEmpty(en.Name) || en.Name.IndexOf('/') >= 0 || en.Name.IndexOf('\\') >= 0 || en.Name.Contains("..")) continue;
+                    string outp = Path.Combine(tmp, en.Name);
+                    using (Stream es = en.Open())
+                    using (FileStream fs = File.Create(outp)) es.CopyTo(fs);
+                }
+            }
+            if (!LooksLikeExe(newExe)) { Cleanup(tmp); return false; }
+            try { DeleteFileW(newExe + ":Zone.Identifier"); } catch { }
 
-            // ★ .bat 은 CreateProcess 로 직접 실행할 수 없다(오류 193 — 유효한 Win32 응용 프로그램이 아님).
-            //   반드시 cmd 로 감싸야 한다. 환경 변수를 넘기려면 UseShellExecute 는 false 여야 하므로
-            //   ShellExecute 로 바꾸는 것은 해법이 아니다.
-            psi = new ProcessStartInfo(
-                      Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe",
-                      "/d /c \"\"" + bat + "\"\"");
-            psi.CreateNoWindow = true;
-            psi.UseShellExecute = false;
-            psi.WorkingDirectory = Path.GetTempPath();
-            psi.EnvironmentVariables["AST_EXE"] = exePath;
-            psi.EnvironmentVariables["AST_DIR"] = dir;
-            psi.EnvironmentVariables["AST_PID"] = pid.ToString();
-            psi.EnvironmentVariables["AST_CANCEL"] = cancel;
-            psi.EnvironmentVariables["AST_LOG"] = ResultPath;
-            psi.EnvironmentVariables["AST_FROM"] = SafeVer(fromVer);
-            psi.EnvironmentVariables["AST_TO"] = SafeVer(toTag);
+            // 3) 교체 — 지금 exe 를 .old 로 비키고 새 exe 를 제자리에
+            string old = exePath + ".old";
+            try { if (File.Exists(old)) File.Delete(old); } catch { old = exePath + ".old" + DateTime.Now.ToString("HHmmss"); }
+            File.Move(exePath, old);                       // 실패하면 바뀐 것 없음 → catch 로
+            try
+            {
+                File.Copy(newExe, exePath, true);
+                if (!LooksLikeExe(exePath)) throw new IOException("bad copy");
+            }
+            catch
+            {
+                try { if (File.Exists(exePath)) File.Delete(exePath); } catch { }
+                try { File.Move(old, exePath); } catch { }
+                Cleanup(tmp); return false;
+            }
+            try { DeleteFileW(exePath + ":Zone.Identifier"); } catch { }
+            // 부속 파일(설명서·보안패치)은 실패해도 앱 실행과 무관
+            foreach (string f in Directory.GetFiles(tmp))
+            {
+                string nm = Path.GetFileName(f);
+                if (nm == "u.zip" || nm == "AutoShutdownTimer.exe") continue;
+                try { File.Copy(f, Path.Combine(dir, nm), true); DeleteFileW(Path.Combine(dir, nm) + ":Zone.Identifier"); } catch { }
+            }
+
+            // 4) 새 앱 띄우기 — 내가 끝날 때까지 기다렸다가 뜬다
+            int pid = Process.GetCurrentProcess().Id;
+            Process np = null;
+            // 갓 쓴 exe 는 백신이 검사하느라 잠깐 잠겨 있을 수 있어 몇 번 다시 시도한다
+            for (int attempt = 0; attempt < 4 && np == null; attempt++)
+            {
+                try
+                {
+                    ProcessStartInfo psi = new ProcessStartInfo(exePath, "--updated " + pid + " " + SafeVer(fromVer));
+                    psi.UseShellExecute = true;
+                    psi.WorkingDirectory = dir;
+                    np = Process.Start(psi);
+                }
+                catch { np = null; }
+                if (np == null) System.Threading.Thread.Sleep(800);
+            }
+            if (np == null)
+            {   // 띄우지 못했다 — 원래 exe 로 되돌리고 안내
+                try { File.Delete(exePath); } catch { }
+                try { File.Move(old, exePath); } catch { }
+                Cleanup(tmp); return false;
+            }
+            try { AllowSetForegroundWindow(np.Id); } catch { }
+            try { np.Dispose(); } catch { }
+            Cleanup(tmp);
+
+            // 5) 종료 (종료 확인 모달은 Updating 으로 건너뛴다)
+            try { Updating = true; Application.Exit(); }
+            catch { }
+            finally { Updating = false; }
+            return true;
         }
-        catch { return false; }
-
-        // ★ 배치를 **먼저** 띄운다. 못 띄우면 앱이 살아 있는 동안 사용자에게 알릴 수 있다.
-        //   배치는 앱이 죽기를 기다리고, 60초 안에 안 죽으면 교체를 포기하므로 먼저 띄워도 안전하다.
-        try { Process.Start(psi); }
         catch
         {
-            try { File.Delete(bat); } catch { }
+            if (tmp != null) Cleanup(tmp);
             return false;
         }
+    }
 
-        // ★ 종료가 취소됐는지는 윈도우가 돌려주는 결과로만 판단한다.
-        //   예전엔 Exit 직후 owner.IsDisposed 로 짐작했는데, Exit 는 FormClosing/Closed 만 돌리고
-        //   폼 해제는 메시지 루프가 끝날 때 일어날 수 있다. 그러면 정상 종료인데도 "취소"로 읽혀
-        //   취소 파일을 쓰고, 배치는 파일을 안 바꾼 채 물러나 앱만 사라졌다.
-        System.ComponentModel.CancelEventArgs exitArgs = new System.ComponentModel.CancelEventArgs();
-        bool exitCalled = false;
-        try { Updating = true; Application.Exit(exitArgs); exitCalled = true; }
-        catch { }
-        finally { Updating = false; }
-
-        // 종료가 취소됐다면 배치에 취소를 알린다 (배치는 이 파일을 보고 조용히 물러난다).
-        if (!exitCalled || exitArgs.Cancel)
+    static bool LooksLikeExe(string path)
+    {
+        try
         {
-            try { File.WriteAllText(cancel, "1"); } catch { }
-            return false;
+            FileInfo fi = new FileInfo(path);
+            if (!fi.Exists || fi.Length < 500000) return false;
+            using (FileStream fs = File.OpenRead(path))
+            { int a = fs.ReadByte(), b = fs.ReadByte(); return a == 'M' && b == 'Z'; }
         }
-        return true;
+        catch { return false; }
+    }
+
+    static void Cleanup(string dir)
+    {
+        try { if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+    }
+
+    /// 진행 창을 띄우고 내려받는다. 성공하면 true. 60초 동안 진척이 없으면 멈춘다. [취소] 가능.
+    static bool Download(Form owner, string url, string dest)
+    {
+        bool ok = false;
+        try { ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072; } catch { }
+        Form dlg = new Form();
+        WebClient wc = new WebClient();
+        Timer guard = new Timer();
+        try
+        {
+            dlg.FormBorderStyle = FormBorderStyle.None;
+            dlg.StartPosition = owner != null && owner.Visible ? FormStartPosition.CenterParent : FormStartPosition.CenterScreen;
+            dlg.ShowInTaskbar = false; dlg.BackColor = Theme.Card;
+            int DW = 280, DH = 132;
+            dlg.ClientSize = new Size(DW, DH);
+            try { dlg.Region = new Region(AppButton.Round(new Rectangle(0, 0, DW, DH), 12)); } catch { }
+            int pct = 0; string state = "새 버전 받는 중";
+            dlg.Paint += delegate(object s2, PaintEventArgs pe)
+            {
+                Graphics g = pe.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias; g.PixelOffsetMode = PixelOffsetMode.Half;
+                using (GraphicsPath bp = AppButton.Round(new Rectangle(0, 0, DW - 1, DH - 1), 12))
+                using (Pen pen = new Pen(Theme.Border, 1F)) g.DrawPath(pen, bp);
+                TextRenderer.DrawText(g, state, Fonts.SemiC(11F), new Rectangle(18, 16, DW - 36, 20), Theme.Ink,
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                TextRenderer.DrawText(g, pct + "%", Fonts.RegularC(9F), new Rectangle(18, 16, DW - 36, 20), Theme.Muted,
+                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                Rectangle track = new Rectangle(18, 48, DW - 36, 6);
+                using (GraphicsPath tp = AppButton.Round(track, 3))
+                using (SolidBrush tb = new SolidBrush(Theme.ToggleOff)) g.FillPath(tb, tp);
+                int fw = Math.Max(6, (DW - 36) * pct / 100);
+                using (GraphicsPath fp = AppButton.Round(new Rectangle(18, 48, fw, 6), 3))
+                using (SolidBrush fb = new SolidBrush(Theme.Accent)) g.FillPath(fb, fp);
+            };
+            AppButton cancel = new AppButton();
+            cancel.Text = "취소"; cancel.Location = new Point(18, DH - 48); cancel.Size = new Size(DW - 36, 34);
+            cancel.Radius = 9; cancel.Font = Fonts.Semi(11F);
+            cancel.Fill = Theme.CancelFill; cancel.FillHover = Theme.CancelHover; cancel.FillDown = Theme.CancelDown;
+            cancel.TextColor = Theme.CancelText; cancel.BorderColor = Theme.CancelBorder;
+            cancel.Click += delegate { try { wc.CancelAsync(); } catch { } };
+            dlg.Controls.Add(cancel);
+
+            DateTime lastProgress = DateTime.Now;
+            wc.Headers[HttpRequestHeader.UserAgent] = "AutoShutdownTimer-Updater";
+            wc.DownloadProgressChanged += delegate(object s2, DownloadProgressChangedEventArgs e)
+            {
+                lastProgress = DateTime.Now;
+                if (e.ProgressPercentage != pct) { pct = e.ProgressPercentage; try { dlg.Invalidate(); } catch { } }
+            };
+            wc.DownloadFileCompleted += delegate(object s2, System.ComponentModel.AsyncCompletedEventArgs e)
+            {
+                ok = !e.Cancelled && e.Error == null;
+                if (ok) { pct = 100; state = "바꾸는 중"; try { dlg.Invalidate(); dlg.Update(); } catch { } }
+                try { dlg.Close(); } catch { }
+            };
+            guard.Interval = 1000;
+            guard.Tick += delegate
+            {
+                if ((DateTime.Now - lastProgress).TotalSeconds > 60) { guard.Stop(); try { wc.CancelAsync(); } catch { } }
+            };
+            dlg.Shown += delegate
+            {
+                guard.Start();
+                try { wc.DownloadFileAsync(new Uri(url), dest); }
+                catch { ok = false; try { dlg.Close(); } catch { } }
+            };
+            if (owner != null && owner.Visible) dlg.ShowDialog(owner); else dlg.ShowDialog();
+        }
+        catch { ok = false; }
+        finally
+        {
+            try { guard.Stop(); guard.Dispose(); } catch { }
+            try { wc.Dispose(); } catch { }
+            try { dlg.Dispose(); } catch { }
+        }
+        return ok && LooksLikeZip(dest);
+    }
+
+    static bool LooksLikeZip(string path)
+    {
+        try
+        {
+            FileInfo fi = new FileInfo(path);
+            if (!fi.Exists || fi.Length < 100000) return false;
+            using (FileStream fs = File.OpenRead(path)) { int a = fs.ReadByte(), b = fs.ReadByte(); return a == 'P' && b == 'K'; }
+        }
+        catch { return false; }
     }
 }
 

@@ -65,7 +65,7 @@ GitHub 직행 주소는 맥과 무관하게 항상 살아 있다:
 
 ## 앱에 대해 알아둘 것
 
-- C# WinForms 단일 파일(`src/PhoneShell.cs`, 3,700줄). 리눅스 mono(`mcs`)로 크로스 빌드한다. 윈도우 전용 API를 쓰면 빌드가 깨진다.
+- C# WinForms 단일 파일(`src/PhoneShell.cs`, 약 5,400줄). `Main` 에 `[STAThread]` 필수(클립보드·대화상자). 리눅스 mono(`mcs`)로 크로스 빌드한다. 윈도우 전용 API를 쓰면 빌드가 깨진다.
 - 폰트(Pretendard 서브셋)·아이콘은 `-resource:` 로 exe 안에 박혀 있다. `build.sh` 의 리소스 이름을 바꾸면 런타임에 못 찾는다.
 - 관리자 권한 매니페스트가 `src/app_full.res` 에 들어 있다(게임 강제 종료용).
 - **자동 업데이트가 들어 있다**(build 72~, 파일 끝 `Updater` 클래스). 시작 6초 뒤 조용히 확인한다.
@@ -73,6 +73,29 @@ GitHub 직행 주소는 맥과 무관하게 항상 살아 있다:
   - 릴리스 태그와 `VERSION` 을 `ParseVer` 로 자리별 비교한다. **태그와 소스 번호가 어긋나면 업데이트가 안 뜬다.**
   - `.NET 4.5` 기본 TLS 는 1.0 이라 GitHub 에 연결되지 않는다. `ServicePointManager.SecurityProtocol = 3072` 을 지우지 말 것.
   - 어떤 실패도 앱을 멈추면 안 된다. 전부 try/catch 이고 조용한 확인은 실패를 알리지 않는다.
+
+### ★ 인앱 업데이트는 1.1.1 부터 배치 없이 앱이 직접 한다 (`Updater.Install`)
+
+1.1.0 까지는 앱을 먼저 끄고 숨은 cmd + PowerShell 배치가 내려받기·교체·재실행을 맡았다.
+그 사슬 어딘가가 끊기면 사용자 눈에는 **"업데이트 눌렀더니 꺼지기만 함"** 이었다(2026-11-21 실사용 보고, 원인 단계 미확정).
+지금 순서 — 앱 밖에서 도는 단계가 없다:
+
+1. 진행 창을 띄우고 `WebClient` 로 zip 을 받는다(60초 무진척 시 중단, [취소] 가능). 실패하면 아무것도 안 바뀐다.
+2. `System.IO.Compression.ZipArchive` 로 풀고(`build.sh` 에 `-r:System.IO.Compression.dll`) exe 를 검사(MZ·500KB↑), `:Zone.Identifier` 삭제.
+3. **실행 중인 exe 는 지울 수 없지만 이름은 바꿀 수 있다** → 지금 exe 를 `.old` 로 비키고 새 exe 를 제자리에 복사. 어느 단계든 실패하면 `.old` 를 되돌린다.
+4. 새 exe 를 `--updated <옛PID> <옛버전>` 으로 띄운다(최대 4회 재시도). 새 앱은 `Main` 에서 옛 PID 가 끝날 때까지(최대 20초) 기다린 뒤 뮤텍스를 잡는다 — 안 기다리면 "이미 실행 중" 으로 조용히 끝난다.
+5. `Updater.Updating` 을 켜고 `Application.Exit()`. 새 앱은 `Shown` 에서 앞으로 나오며 "vA → vB 로 업데이트했어요" 토스트, 5초 간격으로 `.old*` 를 지운다.
+
+- ★ 여전히 **교체 코드는 지금 설치된 버전이 실행한다.** 1.1.0 이하 설치본은 옛 배치를 쓰므로 1.1.1 은 수동 설치 1회가 필요하다.
+- ★ "새 앱이 떴는지 보고 안 떴으면 되돌리기" 는 여기서도 넣지 않는다(아래 실사고).
+- `ShowLastResult`(옛 배치의 `update_result.txt` 결과 알림)는 1.1.0 이하에서 넘어오는 경우를 위해 남겨 둔다.
+- 아래 `.bat`·배치 안전장치 절은 1.1.0 이하 배치의 기록이다.
+
+### 자동 실행 작업은 XML 로 등록한다 (1.1.1)
+
+`schtasks /SC ONLOGON` 기본값은 전원 연결 시에만 시작 · 배터리로 바뀌면 중지 · **72시간 뒤 강제 종료**다.
+트레이 상주 앱엔 치명적이라 `CreateAutoRunTask` 가 XML(`DisallowStartIfOnBatteries=false`, `StopIfGoingOnBatteries=false`,
+`ExecutionTimeLimit=PT0S`, `--tray`)로 등록하고, 시작 시 `EnsureAutoRunTray` 가 옛 작업을 조용히 고친다(백그라운드 스레드).
 
 ### ★ `.bat` 은 cmd 로만 실행할 수 있다
 

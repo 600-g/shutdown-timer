@@ -9,7 +9,7 @@ OUT_EXE="AutoShutdownTimer.exe"
 
 echo "== 컴파일 =="
 mcs -sdk:4.5 -target:winexe -out:"$OUT_EXE" \
-  -r:System.Windows.Forms.dll -r:System.Drawing.dll \
+  -r:System.Windows.Forms.dll -r:System.Drawing.dll -r:System.IO.Compression.dll \
   -win32res:src/app_full.res \
   -resource:src/SubR.ttf,PretendardR.ttf \
   -resource:src/SubSB.ttf,PretendardSB.ttf \
