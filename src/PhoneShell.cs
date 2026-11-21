@@ -574,6 +574,12 @@ public class IosStepper : Panel
     private decimal _val = 0;
     private const int CHV = 24;   // 우측 화살표 영역 폭
     private bool editing = false;
+    // 편집을 막 시작한 상태: 첫 숫자를 치면 기존 값을 통째로 바꾼다.
+    // (SelectAll 로 전체 선택하면 윈도우 기본 선택색 — 파란 바탕 흰 글씨 — 이 떠서 값이 안 보였다)
+    private bool fresh = false;
+    private string Fmt(decimal v) { return Pad2 ? ((int)v).ToString("00") : ((int)v).ToString(); }
+    private void CaretEnd() { try { tb.SelectionLength = 0; tb.SelectionStart = tb.Text.Length; } catch { } }
+    private void EditFont() { Font f = Fonts.SemiPx(this.Font.Size); tb.Font = f ?? this.Font; }
 
     public decimal Value
     {
@@ -600,20 +606,26 @@ public class IosStepper : Panel
         tb.Visible = false;
         Controls.Add(tb);
         tb.KeyPress += delegate(object s, KeyPressEventArgs e) {
-            if (!char.IsControl(e.KeyChar) && !char.IsDigit(e.KeyChar)) e.Handled = true;
+            if (!char.IsControl(e.KeyChar) && !char.IsDigit(e.KeyChar)) { e.Handled = true; return; }
+            if (fresh && char.IsDigit(e.KeyChar))
+            { fresh = false; tb.Text = e.KeyChar.ToString(); CaretEnd(); e.Handled = true; return; }
+            if (fresh && e.KeyChar == '\b') { fresh = false; tb.Text = ""; e.Handled = true; return; }
+            fresh = false;
         };
         tb.KeyDown += delegate(object s, KeyEventArgs e) {
             if (e.KeyCode == Keys.Up) { Bump(true); e.Handled = true; }
             else if (e.KeyCode == Keys.Down) { Bump(false); e.Handled = true; }
             else if (e.KeyCode == Keys.Enter) { EndEdit(); e.SuppressKeyPress = true; }
-            else if (e.KeyCode == Keys.Escape) { tb.Text = ((int)_val).ToString(); EndEdit(); e.SuppressKeyPress = true; }
-            else if (e.Control && e.KeyCode == Keys.A) { tb.SelectAll(); e.SuppressKeyPress = true; e.Handled = true; }
+            else if (e.KeyCode == Keys.Escape) { tb.Text = Fmt(_val); EndEdit(); e.SuppressKeyPress = true; }
+            else if (e.Control && e.KeyCode == Keys.A) { fresh = true; CaretEnd(); e.SuppressKeyPress = true; e.Handled = true; }
         };
-        tb.DoubleClick += delegate { tb.SelectAll(); };
+        // 전체 선택 대신 "다음 입력이 값을 바꾼다" 로 동작 (선택 하이라이트를 띄우지 않는다)
+        tb.DoubleClick += delegate { fresh = true; CaretEnd(); };
+        tb.MouseUp += delegate { if (tb.SelectionLength > 0) { fresh = true; CaretEnd(); } };
         tb.Leave += delegate { EndEdit(); };
     }
 
-    protected override void OnFontChanged(EventArgs e) { base.OnFontChanged(e); if (tb != null) tb.Font = this.Font; LayoutTb(); Invalidate(); }
+    protected override void OnFontChanged(EventArgs e) { base.OnFontChanged(e); if (tb != null) EditFont(); LayoutTb(); Invalidate(); }
     public void RefreshTheme() { BackColor = Theme.Card; if (tb != null) { tb.BackColor = Theme.Card; tb.ForeColor = Theme.Ink; } Invalidate(); }
     protected override void OnResize(EventArgs e) { base.OnResize(e); LayoutTb(); UpdateRegion(); }
     private void UpdateRegion()
@@ -632,9 +644,11 @@ public class IosStepper : Panel
     {
         if (editing) return;
         editing = true;
-        tb.Text = ((int)_val).ToString();
+        tb.BackColor = Theme.Card; tb.ForeColor = Theme.Ink;   // 테마가 바뀐 뒤에도 항상 현재 색
+        EditFont();
+        tb.Text = Fmt(_val);
         tb.Visible = true; LayoutTb();
-        tb.Focus(); tb.SelectAll();
+        tb.Focus(); fresh = true; CaretEnd();
         Invalidate();
     }
     private void EndEdit()
@@ -650,7 +664,7 @@ public class IosStepper : Panel
     {
         if (v < Minimum) v = Minimum; if (v > Maximum) v = Maximum;
         bool ch = v != _val; _val = v;
-        if (updateText && tb != null && editing) tb.Text = ((int)v).ToString();
+        if (updateText && tb != null && editing) { tb.Text = Fmt(v); fresh = true; CaretEnd(); }
         Invalidate();
         if (raise && ch && ValueChanged != null) ValueChanged(this, EventArgs.Empty);
     }
@@ -702,11 +716,27 @@ public class IosStepper : Panel
     }
 }
 
+// 요일 예약(전원 끄기). Days: bit0=월 … bit6=일 · 0x7F=매일 · 0=한 번만(울린 뒤 자동 꺼짐)
 public class Sched
 {
-    public int H, M; public bool On = true;
+    public int H, M; public bool On = true; public int Days = 0x7F;
     public string Key { get { return H.ToString("00") + ":" + M.ToString("00"); } }
-    public override string ToString() { return H + ":" + M + ":" + (On ? 1 : 0); }
+    public string DaysText
+    {
+        get
+        {
+            int d = Days & 0x7F;
+            if (d == 0x7F) return "매일";
+            if (d == 0x1F) return "평일";
+            if (d == 0x60) return "주말";
+            if (d == 0) return "한 번만";
+            string[] dn = new string[] { "월", "화", "수", "목", "금", "토", "일" };
+            string t = "";
+            for (int i = 0; i < 7; i++) if ((d & (1 << i)) != 0) t += (t.Length > 0 ? " " : "") + dn[i];
+            return t;
+        }
+    }
+    public override string ToString() { return H + "|" + M + "|" + (On ? 1 : 0) + "|" + (Days & 0x7F); }
 }
 
 public class ProcItem
@@ -774,8 +804,8 @@ public class MainForm : Form
     private bool warned = false, anyFail = false, isTestRun = false;
     private bool powerRunning = false; private int powerKind = 0;
     private System.Collections.Generic.List<Sched> scheds = new System.Collections.Generic.List<Sched>();
-    private string lastMin = "";
-    private Panel panelSched; private NumericUpDown sHour, sMin; private ListBox schedBox; private Timer schedTimer;
+    private Panel panelSched; private DbListBox schedBox; private Panel schedCard; private Label lblSchedNext; private Timer schedTimer;
+    private string schedFiredKey = "";
     private Panel panelPresets; private System.Collections.Generic.List<int> presets = new System.Collections.Generic.List<int>();
     private Panel alarmCard; private Label lahHelp;
     // 알림 표시 방식: 0=앱 팝업만, 1=윈도우 알림만, 2=둘 다
@@ -1181,6 +1211,31 @@ public class MainForm : Form
         // 자주 쓰는 타이머(분) 저장 목록 — 칩 형태
         panelPresets = new Panel(); panelPresets.Size = new Size(CW, 30); panelPresets.BackColor = BG;
         screen.Controls.Add(panelPresets);
+
+        // 요일 예약 (전원 끄기 탭 전용) — 정한 요일·시각에 1분 예고 후 전원 끄기
+        panelSched = new Panel(); panelSched.Size = new Size(CW, 30 + 16 + 34 * 2); panelSched.BackColor = BG; panelSched.Visible = false;
+        screen.Controls.Add(panelSched);
+        Label lblSchedHead = new Label(); lblSchedHead.Text = "요일 예약"; lblSchedHead.Font = Fonts.Semi(10.5F); lblSchedHead.ForeColor = INK;
+        lblSchedHead.Location = new Point(0, 5); lblSchedHead.AutoSize = true; lblSchedHead.BackColor = BG; panelSched.Controls.Add(lblSchedHead);
+        lblSchedNext = new Label(); lblSchedNext.Text = ""; lblSchedNext.Font = Fonts.Regular(9F); lblSchedNext.ForeColor = MUTED;
+        lblSchedNext.Location = new Point(72, 7); lblSchedNext.AutoSize = true; lblSchedNext.BackColor = BG; panelSched.Controls.Add(lblSchedNext);
+        AppButton btnSchedAdd = MakeGhost("+ 추가", CW - 64, 0, 64, 26); btnSchedAdd.Radius = 7; btnSchedAdd.Font = Fonts.Semi(9.5F);
+        btnSchedAdd.Click += delegate { OpenSchedEditor(-1); };
+        tip.SetToolTip(btnSchedAdd, "요일·시각을 정해 자동으로 전원 끄기");
+        panelSched.Controls.Add(btnSchedAdd);
+        schedBox = new DbListBox(); schedBox.Font = Fonts.Regular(9.5F);
+        schedBox.DrawMode = DrawMode.OwnerDrawFixed; schedBox.ItemHeight = 34; schedBox.IntegralHeight = false;
+        schedBox.DrawItem += SchedDraw; schedBox.MouseUp += SchedMouse;
+        schedBox.KeyDown += delegate(object s2, KeyEventArgs k)
+        {
+            int si = schedBox.SelectedIndex;
+            if (k.KeyCode == Keys.Delete && si >= 0) { DelSched(si); k.SuppressKeyPress = true; }
+            else if (k.KeyCode == Keys.Enter && si >= 0) { k.SuppressKeyPress = true; OpenSchedEditor(si); }
+        };
+        schedCard = MakeCard(schedBox, 0, 30, CW, 16 + 34 * 2, panelSched, true);
+        schedBox.EmptyHint = "요일 예약 없음";
+        tip.SetToolTip(schedBox, "클릭: 수정 · 오른쪽 스위치: 켜기/끄기 · 우클릭: 삭제");
+        schedTimer = new Timer(); schedTimer.Interval = 10000; schedTimer.Tick += SchedTick; schedTimer.Start();
         presets.Add(30); presets.Add(60); presets.Add(120);
 
         // ── 하단 버튼 (풀폭 스택) ──
@@ -1224,8 +1279,6 @@ public class MainForm : Form
         timer = new Timer(); timer.Interval = 1000; timer.Tick += TimerTick;
         killStepTimer = new Timer(); killStepTimer.Tick += KillStep;
 
-        // (예약 시각 목록 기능은 사용자 요청으로 제외 — 타이머 + 자주 쓰는 분 칩으로 대체.
-        //  관련 메서드는 남겨두어 언제든 복원 가능)
 
         BuildPhoneButtons();
         SetNotifyKind(notifyKind);        // 기본 스타일(둘 다) 먼저 적용
@@ -1637,6 +1690,7 @@ public class MainForm : Form
             btnStart.Visible = false; btnCancel.Visible = false;
             lblAfterF.Visible = false; numMinutes.Visible = false; lblUnitF.Visible = false; lblEta.Visible = false;
             if (panelPresets != null) panelPresets.Visible = false;
+            if (panelSched != null) panelSched.Visible = false;
             RefreshAutoRunToggle();
             RefreshNotiWarn();
             RefreshStatus();
@@ -1899,41 +1953,6 @@ public class MainForm : Form
         b.Invalidate();
     }
 
-    // ───── 예약 시각(저장) ─────
-    private string SchedPath
-    {
-        get
-        {
-            string d = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ShutdownTimer");
-            try { if (!System.IO.Directory.Exists(d)) System.IO.Directory.CreateDirectory(d); } catch { }
-            return System.IO.Path.Combine(d, "scheds.txt");
-        }
-    }
-    private void LoadScheds()
-    {
-        try
-        {
-            if (System.IO.File.Exists(SchedPath))
-                foreach (string line in System.IO.File.ReadAllLines(SchedPath))
-                {
-                    string[] a = line.Split(new char[] { ':' });
-                    if (a.Length >= 3) { Sched sc = new Sched(); int h, m; int.TryParse(a[0], out h); int.TryParse(a[1], out m); sc.H = h; sc.M = m; sc.On = a[2] == "1"; scheds.Add(sc); }
-                }
-            RefreshSchedBox();
-        }
-        catch { }
-    }
-    private void SaveScheds()
-    {
-        try
-        {
-            System.Text.StringBuilder sb = new System.Text.StringBuilder();
-            foreach (Sched sc in scheds) sb.AppendLine(sc.ToString());
-            System.IO.File.WriteAllText(SchedPath, sb.ToString());
-        }
-        catch { }
-    }
-
     // ───── 마지막 설정값 저장/복원 (타이머 분, 알림 문구, 토글, 대상 목록) ─────
     // exe 옆 저장 우선 (관리자 실행이라 항상 쓰기 가능 · UAC 계정과 무관하게 동일 위치)
     private string ExeSettingsPath
@@ -1953,7 +1972,7 @@ public class MainForm : Form
             return System.IO.Path.Combine(d, "settings.txt");
         }
     }
-    private const string VERSION = "1.0.0";   // 배포 버전 (semver) — 태그 v1.0.0 과 같은 값
+    private const string VERSION = "1.1.0";   // 배포 버전 (semver) — 태그 v1.0.0 과 같은 값
     private int sigClicks = 0; private DateTime sigFirst = DateTime.MinValue;
     private string loadedFrom = null;   // 진단: 설정을 어디서 불러왔는지
     private bool saveErrShown = false;
@@ -2222,6 +2241,19 @@ public class MainForm : Form
                             { defMin.Add(am); defMsg.Add(amsg); defNote.Add(anote); defShow.Add(ashow); defDays.Add(adays); defOn.Add(aon); defKind.Add(akind); lstAlarms.Items.Add(AlarmLabel(am, akind, amsg)); }
                         }
                     }
+                    else if (k == "psched")
+                    {
+                        // H|M|on|days
+                        string[] a = v.Split(new char[] { '|' });
+                        int ph, pm, pd;
+                        if (a.Length >= 4 && int.TryParse(a[0], out ph) && int.TryParse(a[1], out pm) && int.TryParse(a[3], out pd)
+                            && ph >= 0 && ph <= 23 && pm >= 0 && pm <= 59)
+                        {
+                            bool dupS = false;
+                            foreach (Sched x in scheds) if (x.H == ph && x.M == pm && x.Days == (pd & 0x7F)) dupS = true;
+                            if (!dupS) { Sched n = new Sched(); n.H = ph; n.M = pm; n.On = a[2] == "1"; n.Days = pd & 0x7F; scheds.Add(n); }
+                        }
+                    }
                     else if (k == "target" && v.Length > 0)
                     {
                         bool dup = false;
@@ -2231,6 +2263,7 @@ public class MainForm : Form
                 }
                 catch { }
             }
+            RefreshSchedBox();
             // 파일에서 불러왔다면 레지스트리로 이관 (다음부터는 레지스트리에서 바로)
             if (loadedFrom != null && loadedFrom != "레지스트리")
             { try { SaveSettings(); } catch { } }
@@ -2310,6 +2343,13 @@ public class MainForm : Form
 
         int rows = (shown / perRow) + 1;
         panelPresets.Height = rows * 30 - 4;
+        LayoutSched();
+    }
+    // 요일 예약 영역: 전원 끄기 탭에서 칩 바로 아래
+    private void LayoutSched()
+    {
+        if (panelSched == null || panelPresets == null) return;
+        try { panelSched.Location = new Point(panelPresets.Left, panelPresets.Bottom + 14); } catch { }
     }
 
     // + 버튼: 스텝퍼가 입력 중이어도 지금 타이핑한 값을 그대로 저장한다
@@ -2356,6 +2396,7 @@ public class MainForm : Form
             sb.AppendLine("seq=" + (chkSeq.Checked ? "1" : "0"));
             sb.AppendLine("fb=" + (chkFallback.Checked ? "1" : "0"));
             foreach (object o in lstTargets.Items) sb.AppendLine("target=" + o);
+            foreach (Sched sc in scheds) sb.AppendLine("psched=" + sc.ToString());
             for (int i = 0; i < defMin.Count && i < defMsg.Count; i++)
                 sb.AppendLine("alarm=" + defMin[i] + "|" + ((i < defOn.Count && defOn[i]) ? "1" : "0") + "|" + (i < defKind.Count ? defKind[i] : 0) + "|" + defMsg[i].Replace("\r", " ").Replace("\n", " ").Replace("|", " ") + "|" + ShowAt(i) + "|" + DaysAt(i) + "|" + EncNote(NoteAt(i)));
             string data = sb.ToString();
@@ -2397,79 +2438,262 @@ public class MainForm : Form
         if (schedBox == null) return;
         try
         {
-            scheds.Sort(delegate(Sched a, Sched b) { return (a.H * 60 + a.M).CompareTo(b.H * 60 + b.M); });
+            scheds.Sort(delegate(Sched x, Sched y) { return (x.H * 60 + x.M).CompareTo(y.H * 60 + y.M); });
+            int keep = schedBox.SelectedIndex;
             schedBox.Items.Clear();
-            foreach (Sched sc in scheds) schedBox.Items.Add(sc);
+            foreach (Sched sc in scheds) schedBox.Items.Add(sc.Key);
+            schedBox.ApplyRegion();
+            if (keep >= 0 && keep < schedBox.Items.Count) schedBox.SelectedIndex = keep;
             schedBox.Invalidate();
+            if (schedCard != null) schedCard.Invalidate();
         }
         catch { }
-        UpdateSchedTimer();
+        UpdateSchedNext();
     }
-    // 켜진 예약이 있을 때만 감시 타이머 동작
-    private void UpdateSchedTimer()
+    // 헤더 옆 "다음 · 수 23:00"
+    private void UpdateSchedNext()
     {
-        if (schedTimer == null) return;
+        if (lblSchedNext == null) return;
         try
         {
-            bool any = false;
-            foreach (Sched sc in scheds) if (sc.On) { any = true; break; }
-            if (any && !schedTimer.Enabled) schedTimer.Start();
-            if (!any && schedTimer.Enabled) schedTimer.Stop();
+            DateTime now = DateTime.Now, best = DateTime.MaxValue;
+            foreach (Sched sc in scheds)
+            {
+                if (!sc.On) continue;
+                DateTime t = NextDailyTarget(sc.H * 60 + sc.M, sc.Days);
+                if (t < best) best = t;
+            }
+            string txt = "";
+            if (best != DateTime.MaxValue)
+            {
+                string[] dn = new string[] { "월", "화", "수", "목", "금", "토", "일" };
+                int dd = (best.Date - now.Date).Days;
+                string day = dd == 0 ? "오늘" : (dd == 1 ? "내일" : dn[DowBit(best)]);
+                txt = "다음 · " + day + " " + best.ToString("HH:mm");
+            }
+            if (lblSchedNext.Text != txt) lblSchedNext.Text = txt;
         }
         catch { }
     }
     private void SchedTick(object sender, EventArgs e)
     {
         try { CheckScheds(); } catch { }
+        try { UpdateSchedNext(); } catch { }
     }
-    private void AddSchedClick(object sender, EventArgs e)
+    private void DelSched(int i)
     {
-        int h = (int)sHour.Value, m = (int)sMin.Value;
-        foreach (Sched sc in scheds) if (sc.H == h && sc.M == m) return;
-        Sched n = new Sched(); n.H = h; n.M = m; n.On = true; scheds.Add(n);
-        RefreshSchedBox(); SaveScheds();
-    }
-    private void DelSched()
-    {
-        int i = schedBox.SelectedIndex;
-        if (i >= 0 && i < scheds.Count) { scheds.RemoveAt(i); RefreshSchedBox(); SaveScheds(); }
+        if (i < 0 || i >= scheds.Count) return;
+        string k = scheds[i].Key;
+        scheds.RemoveAt(i);
+        RefreshSchedBox();
+        try { SaveSettings(); } catch { }
+        ShowToast(k + " 예약 삭제됨", false);
     }
     private void SchedMouse(object sender, MouseEventArgs e)
     {
         int i = schedBox.IndexFromPoint(e.Location);
-        if (i < 0 || i >= scheds.Count) return;
+        if (i < 0 || i >= scheds.Count) { schedBox.ClearSelected(); return; }
         schedBox.SelectedIndex = i;
-        if (e.X > schedBox.Width - 64) { scheds[i].On = !scheds[i].On; schedBox.Invalidate(); SaveScheds(); UpdateSchedTimer(); }
+        if (e.Button == MouseButtons.Right) { DelSched(i); return; }
+        if (e.Button != MouseButtons.Left) return;
+        int visR = (schedCard != null ? schedCard.Width - 10 : schedBox.ClientSize.Width);
+        if (e.X > visR - 52)
+        {   // 스위치: 켜기/끄기
+            scheds[i].On = !scheds[i].On;
+            schedBox.Invalidate();
+            try { SaveSettings(); } catch { }
+            UpdateSchedNext();
+            ShowToast(scheds[i].Key + " " + scheds[i].DaysText + (scheds[i].On ? " 켜짐" : " 꺼짐"), scheds[i].On);
+            return;
+        }
+        OpenSchedEditor(i);
     }
+    // 행: [시각 배지] 요일 ........ [스위치]  (알림 리스트와 같은 모양)
     private void SchedDraw(object sender, DrawItemEventArgs e)
     {
-        e.DrawBackground();
+        bool sel = (e.State & DrawItemState.Selected) != 0;
+        using (SolidBrush bg2 = new SolidBrush(sel ? Theme.RowSel : Theme.Card))
+            e.Graphics.FillRectangle(bg2, e.Bounds);
         if (e.Index < 0 || e.Index >= scheds.Count) return;
         Sched sc = scheds[e.Index];
+        bool on = sc.On;
         Graphics g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
         Rectangle r = e.Bounds;
-        TextRenderer.DrawText(g, sc.Key, Fonts.Semi(14F), new Rectangle(r.X + 14, r.Y, 120, r.Height), sc.On ? INK : Color.FromArgb(170, 176, 186), TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
-        // 토글
-        int tw = 44, th = 24, tx = r.Right - tw - 12, tyv = r.Y + (r.Height - th) / 2;
+        int bw = 52, bh = 22, bx = r.X + 8, by = r.Y + (r.Height - bh) / 2;
+        using (GraphicsPath bp = AppButton.Round(new Rectangle(bx, by, bw, bh), 5))
+        {
+            using (SolidBrush bb = new SolidBrush(on ? (Theme.Dark ? Color.FromArgb(34, 74, 52) : Color.FromArgb(223, 245, 231)) : Theme.BadgeOffFill)) g.FillPath(bb, bp);
+            if (on) using (Pen pn = new Pen(Color.FromArgb(52, 199, 89), 1.3F)) g.DrawPath(pn, bp);
+        }
+        TextRenderer.DrawText(g, sc.Key, Fonts.Semi(9.5F), new Rectangle(bx, by, bw, bh),
+            on ? (Theme.Dark ? Color.FromArgb(96, 220, 140) : Color.FromArgb(24, 138, 72)) : Theme.OffText,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        int visR = (schedCard != null ? schedCard.Width - 10 : r.Right);
+        int tw = 32, th = 18, tx = visR - tw - 20, tyv = r.Y + (r.Height - th) / 2;
+        int textL = bx + bw + 10;
+        TextRenderer.DrawText(g, sc.DaysText, Fonts.Regular(9.5F), new Rectangle(textL, r.Y, Math.Max(10, tx - 8 - textL), r.Height),
+            on ? INK : Theme.OffText,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
         using (GraphicsPath tp = AppButton.Round(new Rectangle(tx, tyv, tw, th), th / 2))
-        using (SolidBrush b = new SolidBrush(sc.On ? Color.FromArgb(52, 199, 89) : Color.FromArgb(206, 210, 218))) g.FillPath(b, tp);
-        int kd = th - 6, kx = sc.On ? tx + tw - kd - 3 : tx + 3;
-        using (SolidBrush b = new SolidBrush(Color.White)) g.FillEllipse(b, kx, tyv + 3, kd, kd);
+        using (SolidBrush b = new SolidBrush(on ? Color.FromArgb(52, 199, 89) : Theme.ToggleOff)) g.FillPath(b, tp);
+        int kd = th - 6, kx = on ? tx + tw - kd - 3 : tx + 3;
+        using (SolidBrush b = new SolidBrush(Theme.Knob)) g.FillEllipse(b, kx, tyv + 3, kd, kd);
+        // 스크롤 표시 (보이는 줄보다 많을 때)
+        int visRows = schedBox.ItemHeight > 0 ? schedBox.Height / schedBox.ItemHeight : 2;
+        int total = scheds.Count;
+        if (total > visRows && visRows > 0)
+        {
+            int trackH = schedBox.Height;
+            float thumbH = Math.Max(20f, trackH * visRows / (float)total);
+            int maxTop = total - visRows;
+            float thumbY = maxTop > 0 ? (trackH - thumbH) * (schedBox.TopIndex / (float)maxTop) : 0;
+            int segTop = Math.Max(r.Y, (int)thumbY), segBot = Math.Min(r.Bottom, (int)(thumbY + thumbH));
+            if (segBot > segTop)
+                using (SolidBrush sb = new SolidBrush(Theme.Dark ? Color.FromArgb(96, 102, 116) : Color.FromArgb(198, 204, 214)))
+                using (GraphicsPath tp2 = AppButton.Round(new Rectangle(visR - 16, segTop + 1, 3, segBot - segTop - 2), 1))
+                    g.FillPath(sb, tp2);
+        }
     }
+    // 정한 요일·시각이 되면 1분 예고 후 전원 끄기 (그 사이 [중지]로 취소 가능)
     private void CheckScheds()
     {
-        string mnow = DateTime.Now.ToString("HHmm");
-        if (mnow == lastMin) return;
-        lastMin = mnow;
-        int hh = DateTime.Now.Hour, mm = DateTime.Now.Minute;
+        DateTime now = DateTime.Now;
+        string key = now.ToString("yyyyMMddHHmm");
+        if (key == schedFiredKey) return;
         foreach (Sched sc in scheds)
-            if (sc.On && sc.H == hh && sc.M == mm)
+        {
+            if (!sc.On || sc.H != now.Hour || sc.M != now.Minute) continue;
+            if (sc.Days != 0 && (sc.Days & (1 << DowBit(now))) == 0) continue;
+            schedFiredKey = key;
+            if (sc.Days == 0) { sc.On = false; try { SaveSettings(); } catch { } if (schedBox != null) schedBox.Invalidate(); }
+            FireSchedShutdown(sc);
+            break;
+        }
+    }
+    private void FireSchedShutdown(Sched sc)
+    {
+        Log("요일 예약 " + sc.Key + " (" + sc.DaysText + ") · 1분 뒤 전원 끄기");
+        // 이미 전원 끄기가 1분 안쪽으로 걸려 있으면 그대로 둔다
+        if (powerRunning && powerKind == 0 && remainingSeconds <= 60) return;
+        if (powerRunning) { powerRunning = false; try { killStepTimer.Stop(); } catch { } }
+        remainingSeconds = 60;
+        warned = false;
+        powerRunning = true; powerKind = 0;
+        // 취소할 수 있게 창을 보여준다 (무음 모드면 포커스를 뺏지 않고 알림만)
+        if (!SilentMode) { try { RestoreFromTray(); } catch { } }
+        SetMode(0);
+        UpdateButtons(); RefreshStatus(); UpdateEta();
+        UpdateCountdown(); SetIslandPower(lblCountdown.Text);
+        if (!timer.Enabled) timer.Start();
+        TrayNotify("1분 뒤 전원이 꺼져요", "요일 예약 " + sc.Key + " · 취소하려면 앱에서 [중지]");
+        ShowToast("요일 예약 · 1분 뒤 전원 끄기", false);
+    }
+    // 요일 예약 추가(-1)/수정 창
+    private void OpenSchedEditor(int idx)
+    {
+        bool editing = idx >= 0 && idx < scheds.Count;
+        Sched cur = editing ? scheds[idx] : null;
+        int[] selDays = new int[] { editing ? cur.Days : 0x7F };
+
+        Form dlg = new Form();
+        dlg.FormBorderStyle = FormBorderStyle.None;
+        dlg.StartPosition = FormStartPosition.CenterParent;
+        dlg.ShowInTaskbar = false; dlg.BackColor = Theme.Card;
+        int DW = 300, DH = 220;
+        dlg.ClientSize = new Size(DW, DH);
+        try { dlg.Region = new Region(AppButton.Round(new Rectangle(0, 0, DW, DH), 12)); } catch { }
+        dlg.Paint += delegate(object s2, PaintEventArgs pe)
+        {
+            Graphics g = pe.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias; g.PixelOffsetMode = PixelOffsetMode.Half;
+            using (GraphicsPath bp = AppButton.Round(new Rectangle(0, 0, DW - 1, DH - 1), 12))
+            using (Pen pen = new Pen(Theme.Border, 1F)) g.DrawPath(pen, bp);
+            TextRenderer.DrawText(g, editing ? "요일 예약 수정" : "요일 예약 추가", Fonts.Semi(11F), new Rectangle(18, 14, DW - 36, 20), INK,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            TextRenderer.DrawText(g, ":", Fonts.Semi(13F), new Rectangle(DW / 2 - 8, 46, 16, 40), INK,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            TextRenderer.DrawText(g, "요일", Fonts.Regular(8.5F), new Rectangle(18, 100, DW - 36, 16), MUTED,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        };
+
+        IosStepper sh = new IosStepper(); sh.Wrap = true; sh.Pad2 = true; sh.Minimum = 0; sh.Maximum = 23;
+        sh.Size = new Size(84, 40); sh.Font = Fonts.System(13F); sh.Location = new Point(DW / 2 - 8 - 84, 46);
+        sh.Value = editing ? cur.H : 23;
+        IosStepper sm = new IosStepper(); sm.Wrap = true; sm.Pad2 = true; sm.Minimum = 0; sm.Maximum = 59;
+        sm.Size = new Size(84, 40); sm.Font = Fonts.System(13F); sm.Location = new Point(DW / 2 + 8, 46);
+        sm.Value = editing ? cur.M : 0;
+        dlg.Controls.Add(sh); dlg.Controls.Add(sm);
+
+        string[] dn = new string[] { "월", "화", "수", "목", "금", "토", "일" };
+        int cw = 34, cgap = 4, cx0 = 18, cy0 = 120, ch = 30;
+        for (int d = 0; d < 7; d++)
+        {
+            ScreenPanel c = new ScreenPanel();
+            c.Location = new Point(cx0 + d * (cw + cgap), cy0); c.Size = new Size(cw, ch); c.BackColor = Theme.Card;
+            int bit = 1 << d; string nm = dn[d];
+            c.Paint += delegate(object s2, PaintEventArgs pe)
             {
-                Log("예약 시각 전원 끄기 " + sc.Key);
-                lblStatus.Text = "예약 시각 · 전원을 끕니다"; lblStatus.ForeColor = DANGER;
-                RunHidden("shutdown", "/s /f /t 0");
-                break;
-            }
+                Graphics g = pe.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias; g.PixelOffsetMode = PixelOffsetMode.Half;
+                bool on = (selDays[0] & bit) != 0;
+                Color fill = on ? ACCENT : (Theme.Dark ? Color.FromArgb(52, 56, 66) : Color.FromArgb(236, 238, 243));
+                Color fg = on ? Color.White : Theme.OffText;
+                using (GraphicsPath bp = AppButton.Round(new Rectangle(0, 0, cw - 1, ch - 1), 8))
+                { using (SolidBrush b = new SolidBrush(fill)) g.FillPath(b, bp);
+                  if (!on) using (Pen pn = new Pen(Theme.PillBorder, 1F)) g.DrawPath(pn, bp); }
+                TextRenderer.DrawText(g, nm, Fonts.Semi(9.5F), new Rectangle(0, 0, cw, ch), fg,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            };
+            c.Click += delegate { selDays[0] ^= bit; ((Control)c).Invalidate(); };
+            dlg.Controls.Add(c);
+        }
+
+        EventHandler doSave = delegate
+        {
+            try { sh.CommitEdit(); sm.CommitEdit(); } catch { }
+            int h = (int)sh.Value, m = (int)sm.Value, days = selDays[0] & 0x7F;
+            for (int q = 0; q < scheds.Count; q++)
+                if (q != idx && scheds[q].H == h && scheds[q].M == m && scheds[q].Days == days)
+                { ShowToast("이미 있는 예약이에요", false); return; }
+            Sched t = editing ? cur : new Sched();
+            t.H = h; t.M = m; t.Days = days; t.On = true;
+            if (!editing) scheds.Add(t);
+            RefreshSchedBox();
+            try { SaveSettings(); } catch { }
+            ShowToast(t.Key + " " + t.DaysText + " 예약됨", true);
+            try { dlg.Close(); } catch { }
+        };
+
+        int nb = editing ? 3 : 2, bgap = 8, bwid = (DW - 36 - bgap * (nb - 1)) / nb, bx0 = 18;
+        AppButton save = new AppButton();
+        save.Text = "저장"; save.Location = new Point(bx0, DH - 44); save.Size = new Size(bwid, 34);
+        save.Radius = 9; save.Font = Fonts.Semi(11F);
+        save.Click += doSave;
+        dlg.Controls.Add(save);
+        if (editing)
+        {
+            AppButton del = new AppButton();
+            del.Text = "삭제"; del.Location = new Point(bx0 + (bwid + bgap), DH - 44); del.Size = new Size(bwid, 34);
+            del.Radius = 9; del.Font = Fonts.Semi(11F);
+            del.Fill = Theme.CancelFill; del.FillHover = Theme.CancelHover; del.FillDown = Theme.CancelDown;
+            del.TextColor = DANGER; del.BorderColor = Theme.CancelBorder;
+            del.Click += delegate { try { dlg.Close(); } catch { } DelSched(scheds.IndexOf(cur)); };
+            dlg.Controls.Add(del);
+        }
+        AppButton cancel = new AppButton();
+        cancel.Text = "취소"; cancel.Location = new Point(bx0 + (bwid + bgap) * (nb - 1), DH - 44);
+        cancel.Size = new Size(bwid, 34); cancel.Radius = 9; cancel.Font = Fonts.Semi(11F);
+        cancel.Fill = Theme.CancelFill; cancel.FillHover = Theme.CancelHover; cancel.FillDown = Theme.CancelDown;
+        cancel.TextColor = Theme.CancelText; cancel.BorderColor = Theme.CancelBorder;
+        cancel.Click += delegate { try { dlg.Close(); } catch { } };
+        dlg.Controls.Add(cancel);
+
+        dlg.KeyPreview = true;
+        dlg.KeyDown += delegate(object s2, KeyEventArgs k)
+        {
+            if (k.KeyCode == Keys.Escape) dlg.Close();
+            else if (k.KeyCode == Keys.Enter) { k.SuppressKeyPress = true; doSave(null, null); }
+        };
+        try { dlg.ShowDialog(this); } catch { }
+        try { dlg.Dispose(); } catch { }
     }
 
     // ───── 관리자 ─────
@@ -3261,7 +3485,7 @@ public class MainForm : Form
         dlg.Paint += delegate(object s2, PaintEventArgs pe)
         {
             Graphics g = pe.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias; g.PixelOffsetMode = PixelOffsetMode.Half;
-            TextRenderer.DrawText(g, kind == 1 ? "요일 · 전부 해제 시 1회성" : "분 뒤 알림 · 요일 없음", Fonts.Regular(8.5F),
+            TextRenderer.DrawText(g, kind == 1 ? "요일" : "", Fonts.Regular(8.5F),
                 new Rectangle(18, 166, DW - 36, 16), MUTED, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
             using (GraphicsPath bp = AppButton.Round(new Rectangle(0, 0, DW - 1, DH - 1), 12))
             using (Pen pen = new Pen(Theme.Border, 1F)) g.DrawPath(pen, bp);
@@ -3737,6 +3961,8 @@ public class MainForm : Form
 
             g.Body.AddHead("전원 끄기");
             g.Body.AddBullet("정한 시간이 되면 PC가 꺼져요 · 저장은 미리 해두세요", 0);
+            g.Body.AddBullet("요일 예약: + 추가로 요일·시각을 정하면 매주 그 시간에 꺼져요 · 1분 전에 알려주고 [중지]로 취소", 0);
+            g.Body.AddBullet("요일 예약은 앱이 켜져 있을 때 동작해요 · 윈도우 시작 시 자동 실행을 켜두세요", 0);
 
             g.Body.AddHead("프로그램");
             g.Body.AddBullet("[앱 목록] 이나 이름 입력으로 닫을 프로그램을 추가", 0);
